@@ -29,18 +29,31 @@ def run_migrations_on_startup():
     # Default to not auto-stamping so first real migrations actually apply.
     # Enable explicitly with ADI_ALLOW_AUTO_STAMP=1 if you are adopting Alembic
     # on a database that already matches the head schema.
+    # Allow auto-stamp if explicitly enabled OR if tables were just created
+    # in this process (fresh install detected by Base.metadata.after_create).
+    # We import lazily to avoid import cycles.
     allow_stamp = os.getenv("ADI_ALLOW_AUTO_STAMP", "0") == "1"
+    try:
+        from .utils.ingest_tracker import CREATED_ANY_TABLES
+        allow_stamp = allow_stamp or CREATED_ANY_TABLES
+    except Exception:
+        pass
 
-    # Postgres advisory lock to prevent concurrent migrations from multiple replicas
+    # Postgres advisory lock to prevent concurrent migrations
+    # from multiple replicas
     is_pg = engine.dialect.name == "postgresql"
 
     with engine.begin() as conn:
         if is_pg:
             conn.execute(
-                text("SELECT pg_advisory_lock(hashtext('omeroadi_migrations'))"))
+                text(
+                    "SELECT pg_advisory_lock("
+                    "hashtext('omeroadi_migrations'))"
+                )
+            )
         try:
             if allow_stamp and not has_version_table:
-                # Check if any ADI table already exists (replace with a reliable table name)
+                # Check if any ADI table already exists (reliable table name)
                 known_tables = {"imports"}  # add/adjust if needed
                 if any(insp.has_table(t) for t in known_tables):
                     command.stamp(cfg, "head")  # baseline existing DB
@@ -48,4 +61,8 @@ def run_migrations_on_startup():
         finally:
             if is_pg:
                 conn.execute(
-                    text("SELECT pg_advisory_unlock(hashtext('omeroadi_migrations'))"))
+                    text(
+                        "SELECT pg_advisory_unlock("
+                        "hashtext('omeroadi_migrations'))"
+                    )
+                )

@@ -2,12 +2,23 @@
 # ingest_tracker.py
 
 import logging
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, Text, Index, ForeignKey, JSON
+from sqlalchemy import (
+    create_engine,
+    Column,
+    String,
+    Integer,
+    DateTime,
+    Text,
+    Index,
+    ForeignKey,
+    JSON,
+    event,
+)
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.sql import func, text
 import json
-from sqlalchemy.dialects.postgresql import UUID  # Add this import at the top
+# from sqlalchemy.dialects.postgresql import UUID  # unused
 import psycopg2
 import time
 
@@ -23,6 +34,10 @@ STAGE_INGEST_STARTED = "Import Started"
 STAGE_INGEST_FAILED = "Import Failed"
 
 Base = declarative_base()
+
+
+# Set to True when Base.metadata.create_all created any tables in this process
+CREATED_ANY_TABLES = False
 
 
 class Preprocessing(Base):
@@ -80,6 +95,17 @@ Index(f"{IngestionTracking.__tablename__}_ix_uuid_timestamp",
       IngestionTracking.uuid, IngestionTracking.timestamp)
 
 
+@event.listens_for(Base.metadata, 'after_create')
+def receive_after_create(target, connection, tables, **kw):
+    "listen for the 'after_create' event"
+    # When SQLAlchemy actually creates one or more tables via create_all,
+    # this event fires with the list of created Table objects.
+    # We flip a module-level flag so the migrator can decide to auto-stamp.
+    global CREATED_ANY_TABLES
+    if tables:
+        CREATED_ANY_TABLES = True
+
+
 class IngestTracker:
     def __init__(self, config):
         if not config or 'ingest_tracking_db' not in config:
@@ -88,7 +114,7 @@ class IngestTracker:
         self.logger = logging.getLogger(__name__)
         self.logger.info("Initializing IngestTracker")
         try:
-            # Override with environment variable if available (SQLAlchemy standard)
+            # Override with environment variable if available
             import os
             self.database_url = os.getenv(
                 'INGEST_TRACKING_DB_URL', config['ingest_tracking_db'])
@@ -116,7 +142,9 @@ class IngestTracker:
             self.logger.info("Database initialization successful")
         except Exception as e:
             self.logger.error(
-                f"Unexpected error during IngestTracker initialization: {e}", exc_info=True)
+                f"Unexpected error during IngestTracker initialization: {e}",
+                exc_info=True,
+            )
             raise
 
     def dispose(self):
@@ -128,7 +156,9 @@ class IngestTracker:
         except Exception as e:
             self.logger.error(f"Error disposing database resources: {e}")
 
-    def db_log_ingestion_event(self, order_info: dict, stage: str, max_retries: int = 3):
+    def db_log_ingestion_event(
+        self, order_info: dict, stage: str, max_retries: int = 3
+    ):
         """
         Log an ingestion step to the database.
         Returns the new entry ID or None if logging failed.
@@ -140,7 +170,11 @@ class IngestTracker:
             return None
 
         self.logger.debug(
-            f"Logging ingestion event - Stage: {stage}, UUID: {order_info.get('UUID')}, Order: {order_info}")
+            "Logging ingestion event - Stage: %s, UUID: %s, Order: %s",
+            stage,
+            order_info.get('UUID'),
+            order_info,
+        )
         for attempt in range(max_retries):
             try:
                 with self.Session() as session:
@@ -166,33 +200,44 @@ class IngestTracker:
                     # Check for _preprocessing_id in order_info
                     preprocessing_id = order_info.get('_preprocessing_id')
                     if preprocessing_id:
-                        # Directly set the preprocessing_id without querying for the object
+                        # Directly set preprocessing_id without querying object
                         new_entry.preprocessing_id = preprocessing_id
                     elif "preprocessing_container" in order_info:
                         # Known hardcoded preprocessing fields
                         hardcoded_fields = {
-                            "container": order_info.get("preprocessing_container"),
-                            "input_file": order_info.get("preprocessing_inputfile"),
-                            "output_folder": order_info.get("preprocessing_outputfolder"),
-                            "alt_output_folder": order_info.get("preprocessing_altoutputfolder")
+                            "container": order_info.get(
+                                "preprocessing_container"
+                            ),
+                            "input_file": order_info.get(
+                                "preprocessing_inputfile"
+                            ),
+                            "output_folder": order_info.get(
+                                "preprocessing_outputfolder"
+                            ),
+                            "alt_output_folder": order_info.get(
+                                "preprocessing_altoutputfolder"
+                            ),
                         }
 
-                        # Handle extra_params - check for direct extra_params first
+                        # Handle extra_params from direct field first
                         extra_params = order_info.get("extra_params", {})
 
-                        # Also extract any additional preprocessing_ fields that aren't hardcoded
+                        # Also extract any preprocessing_ fields not hardcoded
                         dynamic_params = {
                             key.replace("preprocessing_", ""): value
                             for key, value in order_info.items()
-                            if key.startswith("preprocessing_") and key not in {
-                                "preprocessing_container",
-                                "preprocessing_inputfile",
-                                "preprocessing_outputfolder",
-                                "preprocessing_altoutputfolder"
-                            }
+                            if (
+                                key.startswith("preprocessing_")
+                                and key not in {
+                                    "preprocessing_container",
+                                    "preprocessing_inputfile",
+                                    "preprocessing_outputfolder",
+                                    "preprocessing_altoutputfolder",
+                                }
+                            )
                         }
 
-                        # Merge both sources - dynamic params override direct ones
+                        # Merge both sources - dynamic overrides direct
                         if dynamic_params:
                             extra_params.update(dynamic_params)
 
@@ -219,16 +264,23 @@ class IngestTracker:
                         f"Created database entry: {new_entry.id}")
                     return new_entry.id
             except (SQLAlchemyError, psycopg2.OperationalError) as e:
-                if "closed the connection" in str(e) or "Name or service not known" in str(e):
+                if (
+                    "closed the connection" in str(e)
+                    or "Name or service not known" in str(e)
+                ):
                     if attempt < max_retries - 1:
                         time.sleep(0.5 * (attempt + 1))  # Exponential backoff
                         continue
                 self.logger.error(
-                    f"Database error logging ingestion step: {e}", exc_info=True)
+                    f"Database error logging ingestion step: {e}",
+                    exc_info=True,
+                )
                 return None
             except Exception as e:
                 self.logger.error(
-                    f"Unexpected error logging ingestion step: {e}", exc_info=True)
+                    f"Unexpected error logging ingestion step: {e}",
+                    exc_info=True,
+                )
                 return None
 
 
@@ -264,5 +316,7 @@ def log_ingestion_step(order_info, stage):
         return tracker.db_log_ingestion_event(order_info, stage)
     else:
         logger.error(
-            "IngestTracker not initialized. Call initialize_ingest_tracker first.")
+            "IngestTracker not initialized. Call initialize_ingest_tracker "
+            "first."
+        )
         return None
