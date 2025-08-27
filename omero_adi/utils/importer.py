@@ -312,11 +312,16 @@ class DataPackageImporter:
     def import_to_omero(self, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
         is_zarr = os.path.splitext(file_path)[1].lower() == '.zarr'
         if is_zarr and self.use_register_zarr:
-            return self.import_zarr(
+            image_ids = self.import_zarr(
                 uri=file_path,
                 target=target_id,
                 target_type=target_type,
             )
+            if target_type == 'Screen':
+                _, local_file_dir = self.get_plate_ids(
+                    str(file_path), target_id)
+            else:
+                local_file_dir = file_path
         else:
             imported = self.import_to_omero_nozarr(
                 file_path=file_path,
@@ -327,11 +332,12 @@ class DataPackageImporter:
                 depth=depth
             )
             if target_type == 'Screen':
-                image_ids, _ = self.get_plate_ids(
+                image_ids, local_file_dir = self.get_plate_ids(
                     str(file_path), target_id)
             else:
                 image_ids = target_id
-            return image_ids
+                local_file_dir = file_path
+        return image_ids, local_file_dir
 
     @connection
     def import_to_omero_nozarr(self, conn, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
@@ -574,7 +580,7 @@ class DataPackageImporter:
             try:
                 if screen_id:
                     if not local_paths:
-                        image_ids = self.import_to_omero(
+                        image_ids, _ = self.import_to_omero(
                             file_path=str(file_path),
                             target_id=screen_id,
                             target_type='Screen',
@@ -589,7 +595,7 @@ class DataPackageImporter:
                         # and then we'll switch the in-place symlinks to the remote storage (subfolder)
                         fp = str(local_paths[i])  # TODO: assumes 1:1 local_paths and file_paths
                         self.logger.debug(f"Importing {fp}")
-                        image_ids = self.import_to_omero(
+                        image_ids, local_file_dir = self.import_to_omero(
                             file_path=fp,
                             target_id=screen_id,
                             target_type='Screen',
@@ -648,7 +654,7 @@ class DataPackageImporter:
                             )
                             self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
                         elif os.path.isdir(file_path):
-                            image_ids = self.import_to_omero(
+                            image_ids, _ = self.import_to_omero(
                                 file_path=str(file_path),
                                 target_id=dataset_id,
                                 target_type='Dataset',
@@ -671,7 +677,7 @@ class DataPackageImporter:
                                 transfer="ln_s"
                             )
                         else:
-                            image_ids = self.import_to_omero(
+                            image_ids, _ = self.import_to_omero(
                                 file_path=fp,
                                 target_id=dataset_id,
                                 target_type='Dataset',
