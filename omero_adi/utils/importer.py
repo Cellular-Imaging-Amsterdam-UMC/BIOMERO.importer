@@ -635,16 +635,7 @@ class DataPackageImporter:
                                     self.logger.debug(
                                         f"new symlinks {symlink_path} -> {new_target}")
 
-                        # delete local copy in tmp out folder
-                        relative_output_path = os.path.join(
-                            "/OMERO", TMP_OUTPUT_FOLDER, self.data_package.get('UUID'))
-                        if os.path.exists(relative_output_path):
-                            self.logger.debug(
-                                f"Removing temporary local {relative_output_path} folder")
-                            shutil.rmtree(relative_output_path)
-                        else:
-                            self.logger.debug(
-                                f"The folder {relative_output_path} does not exist.")
+                        # Defer cleanup; handled after all files are processed
                     upload_target = screen_id
                 else:
                     if not local_paths:
@@ -727,16 +718,7 @@ class DataPackageImporter:
                                     self.logger.debug(
                                         f"new symlinks {symlink_path} -> {new_target}")
 
-                        # delete local copy in tmp out folder
-                        relative_output_path = os.path.join(
-                            "/OMERO", TMP_OUTPUT_FOLDER, self.data_package.get('UUID'))
-                        if os.path.exists(relative_output_path):
-                            self.logger.debug(
-                                f"Removing temporary local {relative_output_path} folder")
-                            shutil.rmtree(relative_output_path)
-                        else:
-                            self.logger.debug(
-                                f"The folder {relative_output_path} does not exist.")
+                        # Defer cleanup; handled after all files are processed
                     upload_target = dataset_id
 
                 if image_ids:
@@ -987,18 +969,38 @@ class DataPackageImporter:
                                     )
                             all_successful_uploads.extend(successful_uploads)
                             all_failed_uploads.extend(failed_uploads)
-                            return all_successful_uploads, all_failed_uploads, False
+
+                            # Final cleanup: remove temp output after all files
+                            try:
+                                tmp_dir = get_tmp_output_path(
+                                    self.data_package
+                                )
+                                if os.path.exists(tmp_dir):
+                                    self.logger.debug(
+                                        f"Removing temp folder: {tmp_dir}"
+                                    )
+                                    shutil.rmtree(tmp_dir)
+                            except Exception as cleanup_err:
+                                self.logger.warning(
+                                    f"Temp cleanup failed: {cleanup_err}"
+                                )
+
+                            return (
+                                all_successful_uploads,
+                                all_failed_uploads,
+                                False,
+                            )
 
                 except TypeError as te:
-                    # Handle suConn returning None (NoneType not a context manager)
+                    # Handle suConn returning None
                     if (
                         "context manager" in str(te)
                         or "NoneType" in str(te)
                     ):
                         full_msg = (
-                            f"suConn failed for user '{intended_username}' in group "
-                            f"'{group_name}'. User may not exist or cannot be "
-                            f"impersonated."
+                            f"suConn failed for user '{intended_username}' "
+                            f"in group '{group_name}'. User may not exist or "
+                            f"cannot be impersonated."
                         )
                         self.logger.error(f"{full_msg} Error: {te}",
                                           exc_info=True)

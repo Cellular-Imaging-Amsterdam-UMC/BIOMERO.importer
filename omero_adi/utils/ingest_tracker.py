@@ -41,7 +41,38 @@ CREATED_ANY_TABLES = False
 
 
 class Preprocessing(Base):
-    """Database model for storing preprocessing parameters."""
+    """Database model for storing preprocessing parameters.
+
+        Migration warning:
+            Changing columns or constraints requires a new Alembic migration.
+            Generate and apply a revision for ADI (omero_adi/migrations):
+
+            PowerShell (Windows):
+                $env:INGEST_TRACKING_DB_URL = \
+                    'postgresql+psycopg2://USER:PASS@HOST:5432/DB'
+                cd omeroadi/omero_adi
+                alembic -c migrations/alembic.ini revision \
+                    --autogenerate -m "explain change"
+
+            Bash (Linux/macOS):
+                export INGEST_TRACKING_DB_URL=\\
+                    postgresql+psycopg2://USER:PASS@HOST:5432/DB
+                cd omeroadi/omero_adi
+                alembic -c migrations/alembic.ini revision \
+                    --autogenerate -m "explain change"
+                
+            When you include the version file in git, it will get packaged
+            when the library is installed (also in the Dockerfile) and 
+            run migration on startup of the ADI.
+
+            Alternatively, manually run 
+                alembic -c migrations/alembic.ini upgrade head
+
+            Notes:
+                - Version table: alembic_version_omeroadi
+                - Only ADI tables are included via env.py include_object
+                
+    """
     __tablename__ = 'imports_preprocessing'
 
     id = Column(Integer, primary_key=True)
@@ -53,7 +84,13 @@ class Preprocessing(Base):
 
 
 class IngestionTracking(Base):
-    """Database model for tracking ingestion steps."""
+    """Database model for tracking ingestion steps.
+
+        Migration warning:
+            Any schema change (add/remove column, type change, indexes) must be
+            captured in a new Alembic revision and upgraded on the database.
+            See commands in Preprocessing model docstring above.
+    """
     __tablename__ = 'imports'
 
     id = Column(Integer, primary_key=True)
