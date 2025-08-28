@@ -24,6 +24,29 @@ import time
 
 logger = logging.getLogger(__name__)
 
+
+def _mask_url(url: str) -> str:
+    """Mask password in a SQLAlchemy URL for safe logging.
+
+    Examples:
+    - postgresql+psycopg2://user:pass@host/db -> user:******@host/db
+    - leaves URLs without credentials unchanged.
+    """
+    try:
+        if not url or '://' not in url:
+            return url
+        scheme, rest = url.split('://', 1)
+        if '@' not in rest:
+            return url
+        creds, tail = rest.split('@', 1)
+        if ':' not in creds:
+            return url
+        user, _ = creds.split(':', 1)
+        return f"{scheme}://{user}:******@{tail}"
+    except Exception:
+        return url
+
+    
 # --------------------------------------------------
 # Stage constants
 # --------------------------------------------------
@@ -62,10 +85,10 @@ class Preprocessing(Base):
                     --autogenerate -m "explain change"
                 
             When you include the version file in git, it will get packaged
-            when the library is installed (also in the Dockerfile) and 
+            when the library is installed (also in the Dockerfile) and
             run migration on startup of the ADI.
 
-            Alternatively, manually run 
+            Alternatively, manually run
                 alembic -c migrations/alembic.ini upgrade head
 
             Notes:
@@ -155,7 +178,9 @@ class IngestTracker:
             import os
             self.database_url = os.getenv(
                 'INGEST_TRACKING_DB_URL', config['ingest_tracking_db'])
-            self.logger.debug(f"Using database URL: {self.database_url}")
+            self.logger.debug(
+                f"Using database URL: {_mask_url(self.database_url)}"
+            )
 
             connect_args = {}
             if self.database_url.startswith('sqlite'):

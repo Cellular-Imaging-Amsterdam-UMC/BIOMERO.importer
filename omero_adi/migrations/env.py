@@ -3,8 +3,7 @@ import os
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Connection
+# from sqlalchemy.engine.url import make_url
 
 from alembic import context
 
@@ -12,12 +11,26 @@ from alembic import context
 # adjust if Base lives elsewhere
 from omero_adi.utils.ingest_tracker import Base as ADIBase
 
-# this is the Alembic Config object, providing access to values within the .ini in use.
+# Alembic Config provides access to values within the .ini in use.
 config = context.config
 
-# Configure URL from env (fall back to SQLite for dev)
-db_url = os.getenv("INGEST_TRACKING_DB_URL", "sqlite:///ingestion_tracking.db")
-config.set_main_option("sqlalchemy.url", db_url)
+def _resolve_db_url() -> str | None:
+    """Resolve DB URL from env (no SQLite fallback)."""
+    return (
+        os.getenv("INGEST_TRACKING_DB_URL")
+        or os.getenv("SQLALCHEMY_URL")
+    )
+
+
+# Respect URL passed by programmatic Config; otherwise resolve from env.
+if not config.get_main_option("sqlalchemy.url"):
+    db_url = _resolve_db_url()
+    if not db_url:
+        raise RuntimeError(
+            "Alembic: no sqlalchemy.url. Set INGEST_TRACKING_DB_URL or "
+            "SQLALCHEMY_URL, or pass sqlalchemy.url via Config."
+        )
+    config.set_main_option("sqlalchemy.url", db_url)
 
 # Use a per-project version table in the same schema
 config.set_main_option("version_table", "alembic_version_omeroadi")
@@ -62,6 +75,8 @@ def run_migrations_online() -> None:
         poolclass=pool.NullPool,
     )
     with connectable.connect() as connection:
+        backend = getattr(connection.dialect, "name", "unknown")
+        context.config.logger.info(f"Alembic backend: {backend}")
         context.configure(
             connection=connection,
             target_metadata=target_metadata,

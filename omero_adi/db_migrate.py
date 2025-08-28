@@ -1,4 +1,5 @@
 import os
+import logging
 import pathlib
 from alembic import command
 from alembic.config import Config
@@ -8,12 +9,47 @@ MIGRATIONS_DIR = str(pathlib.Path(__file__).with_name("migrations"))
 VERSION_TABLE = "alembic_version_omeroadi"
 
 
+def _mask_url(url: str) -> str:
+    try:
+        # Basic masking: replace password between ://user:pass@ with ******
+        if '://' in url and '@' in url and ':' in url.split('://', 1)[1]:
+            scheme, rest = url.split('://', 1)
+            creds, tail = rest.split('@', 1)
+            if ':' in creds:
+                user, _ = creds.split(':', 1)
+                return f"{scheme}://{user}:******@{tail}"
+    except Exception:
+        pass
+    return url
+
+
 def run_migrations_on_startup():
     if os.getenv("ADI_RUN_MIGRATIONS", "1") != "1":
         return
 
-    db_url = os.getenv("INGEST_TRACKING_DB_URL",
-                       "sqlite:///ingestion_tracking.db")
+    # Prefer the DB URL already used by IngestTracker (initialized earlier)
+    db_url = None
+    try:
+        from .utils.ingest_tracker import get_ingest_tracker
+        tracker = get_ingest_tracker()
+        if tracker and getattr(tracker, 'database_url', None):
+            db_url = tracker.database_url
+    except Exception:
+        pass
+    # Fallback to env vars if tracker not available
+    if not db_url:
+        db_url = (
+            os.getenv("INGEST_TRACKING_DB_URL")
+            or os.getenv("SQLALCHEMY_URL")
+        )
+    if not db_url:
+        raise RuntimeError(
+            "ADI migrations: No DB URL found. Ensure IngestTracker is "
+            "initialized or set INGEST_TRACKING_DB_URL/SQLALCHEMY_URL."
+        )
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"ADI Alembic DB: {_mask_url(db_url)}")
     engine = create_engine(db_url)
 
     cfg = Config()
@@ -23,7 +59,8 @@ def run_migrations_on_startup():
 
     insp = inspect(engine)
     has_version_table = insp.has_table(VERSION_TABLE)
-    # Heuristic: if we already have ADI tables but no version table, allow auto-stamp
+    # Heuristic: if we already have ADI tables but no version table,
+    # allow auto-stamp
     # so existing installs can adopt Alembic without recreating tables.
     # Disable by setting ADI_ALLOW_AUTO_STAMP=0
     # Default to not auto-stamping so first real migrations actually apply.
