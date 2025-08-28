@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import logging
 from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config, pool
@@ -13,6 +14,7 @@ from omero_adi.utils.ingest_tracker import Base as ADIBase
 
 # Alembic Config provides access to values within the .ini in use.
 config = context.config
+
 
 def _resolve_db_url() -> str | None:
     """Resolve DB URL from env (no SQLite fallback)."""
@@ -38,6 +40,7 @@ config.set_main_option("version_table", "alembic_version_omeroadi")
 # Interpret the config file for Python logging.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+logger = logging.getLogger(__name__)
 
 target_metadata = ADIBase.metadata
 
@@ -76,7 +79,7 @@ def run_migrations_online() -> None:
     )
     with connectable.connect() as connection:
         backend = getattr(connection.dialect, "name", "unknown")
-        context.config.logger.info(f"Alembic backend: {backend}")
+        logger.info(f"Alembic backend: {backend}")
         context.configure(
             connection=connection,
             target_metadata=target_metadata,
