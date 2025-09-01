@@ -373,7 +373,7 @@ class DataPackageImporter:
         file_title = os.path.splitext(os.path.basename(uri))[0].rstrip('.ome')
         args = SimpleNamespace(uri=uri, endpoint=endpoint, name=file_title,
                                nosignrequest=nosignrequest, target=target, target_by_name=target_by_name)
-        reg_path = None
+        reg_paths = []
 
         # --- start copy from register.main() ---
 
@@ -426,12 +426,12 @@ class DataPackageImporter:
         if image_ids:
             self.imported = True
             if "plate" in zattrs:
-                _, reg_path = self.get_plate_ids(str(local_path), screen_id)
-                self.logger.info(f'Import successfully for {str(uri)}')
+                _, reg_paths = self.get_plate_ids(uri, target)
+                self.logger.info(f'Import successfully for {uri}')
         else:
             self.imported = False
-            self.logger.error(f'Import failed for {str(uri)}')
-        return image_ids, reg_path
+            self.logger.error(f'Import failed for {uri}')
+        return image_ids, reg_paths
 
     @connection
     def get_plate_ids(self, conn, file_path, screen_id):
