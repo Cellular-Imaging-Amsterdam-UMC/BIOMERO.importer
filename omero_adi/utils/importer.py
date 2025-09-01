@@ -364,7 +364,7 @@ class DataPackageImporter:
             return False
 
     @connection
-    def import_zarr(self, conn, uri, target, target_type, target_by_name=None, endpoint=None, nosignrequest=False):
+    def import_zarr(self, conn, uri, target, target_by_name=None, endpoint=None, nosignrequest=False):
         # Using https://github.com/BioNGFF/omero-import-utils/blob/main/metadata/register.py
         from .register import load_attrs, register_image, register_plate, link_to_target, validate_endpoint
         import zarr
@@ -373,6 +373,7 @@ class DataPackageImporter:
         file_title = os.path.splitext(os.path.basename(uri))[0].rstrip('.ome')
         args = SimpleNamespace(uri=uri, endpoint=endpoint, name=file_title,
                                nosignrequest=nosignrequest, target=target, target_by_name=target_by_name)
+        reg_path = None
 
         # --- start copy from register.main() ---
 
@@ -424,11 +425,13 @@ class DataPackageImporter:
         image_ids = [obj.getId().getValue() for obj in objs]
         if image_ids:
             self.imported = True
-            self.logger.info(f'Import successfully for {str(uri)}')
+            if "plate" in zattrs:
+                _, reg_path = self.get_plate_ids(str(local_path), screen_id)
+                self.logger.info(f'Import successfully for {str(uri)}')
         else:
             self.imported = False
             self.logger.error(f'Import failed for {str(uri)}')
-        return image_ids
+        return image_ids, reg_path
 
     @connection
     def get_plate_ids(self, conn, file_path, screen_id):
@@ -528,56 +531,19 @@ class DataPackageImporter:
         failed_uploads = []
         self.logger.debug(f"Uploading files: {file_paths}")
         upload_target = dataset_id or screen_id
-        pre_processing = not local_paths
+        pre_processing = local_paths is not None
 
         for i, file_path in enumerate(file_paths):
             self.logger.debug(f"Uploading file: {file_path}")
             try:
                 if pre_processing:  # pre-processing
-                    local_path = local_paths[i]
+                    local_path = local_paths[i]  # TODO: assumes 1:1 local_paths and file_paths
+                    self.logger.debug(f"Importing {local_path}")
+
                     is_zarr = 'zar' in os.path.splitext(local_path)[1].lower()
                     if is_zarr and self.use_register_zarr:
-                        image_ids = self.import_zarr(
+                        image_ids, local_file_dir = self.import_zarr(
                             uri=str(local_path),
-                            target=upload_target
-                        )
-                    else:
-                        if screen_id:   # screen
-                            imported = self.import_to_omero(
-                                file_path=str(file_path),
-                                target_id=screen_id,
-                                target_type='Screen',
-                                uuid=uuid,
-                                depth=10
-                            )
-                            image_ids, _ = self.get_plate_ids(
-                                str(file_path), screen_id)
-                        else:   # not screen
-                            if os.path.isfile(file_path):
-                                image_ids = self.import_dataset(
-                                    target=str(file_path),
-                                    dataset=dataset_id,
-                                    transfer="ln_s"
-                                )
-                                self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
-                            elif os.path.isdir(file_path):
-                                imported = self.import_to_omero(
-                                    file_path=str(file_path),
-                                    target_id=dataset_id,
-                                    target_type='Dataset',
-                                    uuid=uuid,
-                                    depth=10
-                                )
-                                image_ids = dataset_id
-                                self.logger.debug(f"Set ids {image_ids} to the dataset {dataset_id}")
-                            else:
-                                raise ValueError(
-                                    f"{file_path} is not recognized as file or directory.")
-                else:   # no pre-processing
-                    is_zarr = 'zar' in os.path.splitext(file_path)[1].lower()
-                    if is_zarr and self.use_register_zarr:
-                        image_ids = self.import_zarr(
-                            uri=str(file_path),
                             target=upload_target
                         )
                     else:
@@ -587,28 +553,29 @@ class DataPackageImporter:
                             # and in local_paths folder on the omero server storage
                             # we will import now in-place from the omero server storage
                             # and then we'll switch the in-place symlinks to the remote storage (subfolder)
-                            fp = str(local_paths[i])  # TODO: assumes 1:1 local_paths and file_paths
-                            self.logger.debug(f"Importing {fp}")
+                            self.logger.debug(f"Importing {local_path}")
                             imported = self.import_to_omero(
-                                file_path=fp,
+                                file_path=local_path,
                                 target_id=screen_id,
                                 target_type='Screen',
                                 uuid=uuid,
                                 depth=10
                             )
-                            self.logger.debug("Upload done.")
+                            self.logger.debug("Upload done. Retrieving plate id.")
                             image_ids, local_file_dir = self.get_plate_ids(
-                                str(file_path), target_id)
-                        else:   # not screen
-                            if os.path.isfile(fp):
+                                str(local_path), screen_id)
+
+                        else:   # no screen
+                            if os.path.isfile(local_path):
                                 image_ids = self.import_dataset(
-                                    target=fp,
+                                    target=local_path,
                                     dataset=dataset_id,
                                     transfer="ln_s"
                                 )
+                                self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
                             else:
                                 imported = self.import_to_omero(
-                                    file_path=fp,
+                                    file_path=local_path,
                                     target_id=dataset_id,
                                     target_type='Dataset',
                                     uuid=uuid,
@@ -617,9 +584,8 @@ class DataPackageImporter:
                                 image_ids = dataset_id
 
                             # Get the OMERO storage path for datasets
-                            _, local_file_dir = self.get_image_paths(str(local_paths[i]), dataset_id)
+                            _, local_file_dir = self.get_image_paths(str(local_path), dataset_id)
 
-                    # TODO: assumes 1:1 local_paths and file_paths
                     # Rest of symlink logic...
                     # Ensure remote_path is the directory itself if file_path is a directory
                     remote_path = file_path if os.path.isdir(
@@ -657,6 +623,46 @@ class DataPackageImporter:
                                     f"new symlinks {symlink_path} -> {new_target}")
                     # Defer cleanup; handled after all files are processed
 
+                else:   # no pre-processing
+                    local_path = None
+                    is_zarr = 'zar' in os.path.splitext(file_path)[1].lower()
+                    if is_zarr and self.use_register_zarr:
+                        image_ids, _ = self.import_zarr(
+                            uri=str(file_path),
+                            target=upload_target
+                        )
+                    else:
+                        if screen_id:   # screen
+                            imported = self.import_to_omero(
+                                file_path=str(file_path),
+                                target_id=screen_id,
+                                target_type='Screen',
+                                uuid=uuid,
+                                depth=10
+                            )
+                            image_ids, _ = self.get_plate_ids(
+                                str(file_path), screen_id)
+                        else:   # no screen
+                            if os.path.isfile(file_path):
+                                image_ids = self.import_dataset(
+                                    target=str(file_path),
+                                    dataset=dataset_id,
+                                    transfer="ln_s"
+                                )
+                                self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
+                            elif os.path.isdir(file_path):
+                                imported = self.import_to_omero(
+                                    file_path=str(file_path),
+                                    target_id=dataset_id,
+                                    target_type='Dataset',
+                                    uuid=uuid,
+                                    depth=10
+                                )
+                                image_ids = dataset_id
+                                self.logger.debug(f"Set ids {image_ids} to the dataset {dataset_id}")
+                            else:
+                                raise ValueError(
+                                    f"{file_path} is not recognized as file or directory.")
                 if screen_id:
                     upload_target = screen_id
                 else:
@@ -671,7 +677,7 @@ class DataPackageImporter:
                     try:
                         self.add_image_annotations(
                             conn, image_or_plate_id, uuid, file_path, is_screen=bool(screen_id),
-                            local_path=local_paths[i] if local_paths else None)
+                            local_path=local_path)
                         self.logger.info(
                             f"Uploaded file: {file_path} to target: {upload_target} with ID: {image_or_plate_id}")
                     except Exception as annotation_error:
