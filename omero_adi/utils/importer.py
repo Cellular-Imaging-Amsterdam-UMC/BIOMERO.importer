@@ -25,6 +25,11 @@ RETRY_DELAY = 5  # Delay between retries (in seconds)
 TMP_OUTPUT_FOLDER = "OMERO_inplace"
 PROCESSED_DATA_FOLDER = ".processed"
 
+# Canonical keys for storing preprocessing artifacts on the data_package
+PREPROC_META_KEY = "_preprocessing_metadata"
+PREPROC_RESULTS_KEY = "_preprocessing_results"
+PREPROC_RENAME_MAP_KEY = "_preprocessing_rename_map"
+
 
 def get_tmp_output_path(data_package):
     """
@@ -185,45 +190,61 @@ class DataProcessor:
             self.logger.debug('sub: %r', line)
 
     def build_podman_command(self, file_path):
-        """Construct the full Podman command based on preprocessing parameters."""
+        """Construct the full Podman command based on preprocessing parameters.
+
+        Returns (podman_command, mount_paths) so mount_paths can be reused
+        as the single source of truth for container<->host mapping.
+        """
         container, kwargs, mount_paths = self.get_preprocessing_args(file_path)
         if not container:
             self.logger.warning("No container specified for podman command.")
-            return None
+            return None, None
 
         podman_settings = ["podman", "run", "--rm"]
-        
+
         # Check if user namespace mapping is available/desired
         userns_mode = os.getenv("PODMAN_USERNS_MODE", "auto").lower()
-        
+
         if userns_mode == "keep-id":
             podman_settings.append("--userns=keep-id")
             self.logger.debug("Added --userns=keep-id for user namespace mapping. This allows running non-root containers.")
         else:
             self.logger.debug(f"Using default podman user mapping (userns_mode: {userns_mode}). This means only root containers can be run.")
-        
+
         for src, dst in mount_paths:
             podman_settings += ["-v", f"{src}:{dst}"]
         podman_command = podman_settings + [container] + kwargs
         self.logger.info(f"Podman command: {' '.join(podman_command)}")
-        return podman_command
-
+        return podman_command, mount_paths
+    
     def run(self, dry_run=False):
-        """Execute the podman command for preprocessing."""
+        """Execute preprocessing containers and parse their JSON output.
+
+        Contract:
+        - Container must emit a single JSON line on stdout as the last line.
+        - JSON is a list of items with keys: name, full_path, alt_path,
+          and optional keyvalues (list[dict] or dict).
+        - Persist structured results and metadata on data_package under
+          PREPROC_RESULTS_KEY and PREPROC_META_KEY.
+
+        Return: (success: bool, processed_paths: list[str]) where processed_paths
+        are host paths mapped from alt_path using the same mount_paths passed to podman.
+        """
         if not self.has_preprocessing():
             self.logger.info("No preprocessing required.")
-            return True, [], {}
+            return True, []
 
         file_paths = self.data_package.get("Files", [])
         processed_files = []
-        metadata_dict = {}  # Store metadata for each processed file
-        
+        metadata_dict = {}
+        preproc_results = []
+
         for file_path in file_paths:
             self.logger.info(f"Preprocessing file: {file_path}")
-            podman_command = self.build_podman_command(file_path)
+            podman_command, mount_paths = self.build_podman_command(file_path)
             if not podman_command:
                 self.logger.error("Failed to build podman command.")
-                return False, [], {}
+                return False, []
 
             if dry_run:
                 self.logger.info(f"Dry run: {' '.join(podman_command)}")
@@ -231,56 +252,135 @@ class DataProcessor:
 
             process = Popen(podman_command, stdout=PIPE, stderr=STDOUT)
             output_lines = []
-            json_parsed = False
-            
+
             with process.stdout:
                 for line in iter(process.stdout.readline, b''):
                     line_str = line.decode().strip()
                     output_lines.append(line_str)
                     self.logger.debug('sub: %r', line)
-    
-            if process.wait() == 0:
-                self.logger.info("Podman command executed successfully.")
-                
-                # Try to parse JSON output from last line (new format)
-                if output_lines:
-                    try:
-                        import json
-                        json_output = json.loads(output_lines[-1])
-                        self.logger.debug(f"Found JSON output: {json_output}")
-                        
-                        # Process JSON format
-                        for item in json_output:
-                            if 'alt_path' in item:
-                                alt_path = item['alt_path']
-                                # Convert container path to actual filesystem path
-                                local_file_path = alt_path.replace('/out/', f"/OMERO/OMERO_inplace/{self.data_package.get('UUID')}/")
-                                processed_files.append(local_file_path)
-                                self.logger.debug(f"Parsed JSON: {alt_path} -> {local_file_path}")
-                                
-                                # Extract metadata if present
-                                if 'keyvalues' in item and item['keyvalues']:
-                                    # keyvalues is a list of dicts, merge them into one dict
-                                    file_metadata = {}
-                                    for kv_dict in item['keyvalues']:
-                                        if isinstance(kv_dict, dict):
-                                            file_metadata.update(kv_dict)
-                                            
-                                    if file_metadata:
-                                        metadata_dict[local_file_path] = file_metadata
-                                        self.logger.debug(f"Extracted metadata for {local_file_path}: {file_metadata}")
-                        json_parsed = True
-                    except (json.JSONDecodeError, KeyError, TypeError) as e:
-                        self.logger.debug(f"No valid JSON output found, using legacy behavior: {e}")
-        
-                # Backward compatibility: if no JSON, use the old behavior
-                if not json_parsed:
-                    self.logger.debug("Using legacy preprocessing behavior (no JSON output)")                
-            else:
+
+            if process.wait() != 0:
                 self.logger.error("Podman command failed.")
-                return False, [], {}
-    
-        return True, processed_files, metadata_dict
+                return False, []
+
+            self.logger.info("Podman command executed successfully.")
+
+            if not output_lines:
+                self.logger.error("No output from preprocessor container.")
+                return False, []
+
+            try:
+                import json
+                raw_last = output_lines[-1]
+                json_output = json.loads(raw_last)
+                if not isinstance(json_output, list):
+                    raise TypeError("Expected a list of result items from preprocessor")
+                self.logger.debug(f"Found JSON output: {json_output}")
+
+                # Use mount_paths as the single source of truth for mapping
+                def to_host_path(container_path: str) -> str | None:
+                    if not container_path:
+                        return None
+                    for host_src, cont_dst in (mount_paths or []):
+                        if host_src and cont_dst and container_path.startswith(cont_dst.rstrip('/') + '/'):
+                            rel = container_path[len(cont_dst.rstrip('/')) + 1:]
+                            return os.path.join(host_src, rel)
+                    return None
+
+                if len(json_output) > 1:
+                    self.logger.warning(
+                        f"Preprocessor returned {len(json_output)} results for a single input. "
+                        "Handling multiple outputs per input is not implemented yet: Only first will be processed."
+                    )
+
+                for item in json_output:
+                    name = item.get('name')
+                    full_path = item.get('full_path')
+                    alt_path = item.get('alt_path')
+
+                    local_alt = to_host_path(alt_path)
+                    local_full = to_host_path(full_path)
+
+                    if local_alt:
+                        processed_files.append(local_alt)
+                        self.logger.debug(
+                            f"Mapped alt_path -> host: {alt_path} -> {local_alt}")
+                    else:
+                        self.logger.warning(
+                            "No alt_path mapping produced a host path; item will be skipped for import")
+
+                    merged_md = {}
+                    kvs = item.get('keyvalues')
+                    if isinstance(kvs, list):
+                        for kv_dict in kvs:
+                            if isinstance(kv_dict, dict):
+                                merged_md.update(kv_dict)
+                    elif isinstance(kvs, dict):
+                        merged_md.update(kvs)
+
+                    if merged_md and local_alt:
+                        metadata_dict[local_alt] = merged_md
+                        self.logger.debug(
+                            (
+                                f"Collected metadata for {local_alt}: "
+                                f"{merged_md}"
+                            )
+                        )
+
+                    base_name = os.path.basename(file_path)
+                    input_base = os.path.splitext(base_name)[0]
+                    given_base = os.path.splitext(name or "")[0]
+                    if given_base and given_base != input_base:
+                        # Store a direct rename map for O(1) lookup later
+                        rename_map = self.data_package.get(
+                            PREPROC_RENAME_MAP_KEY, {}
+                        ) or {}
+                        rename_map[str(file_path)] = str(name or "")
+                        self.data_package[PREPROC_RENAME_MAP_KEY] = rename_map
+                        self.logger.debug(
+                            f"Name mismatch recorded in rename map for {file_path}: "
+                            f"input='{input_base}' vs given='{given_base}'"
+                            f" -> {self.data_package[PREPROC_RENAME_MAP_KEY]}"
+                        )
+
+                    is_processed = bool(
+                        full_path and f"/{PROCESSED_DATA_FOLDER}/" in full_path
+                    )
+                    result_item = {
+                        'name': name,
+                        'full_path': full_path,
+                        'alt_path': alt_path,
+                        'local_alt_path': local_alt,
+                        'local_full_path': local_full,
+                        'metadata': merged_md or None,
+                        'full_is_processed': is_processed,
+                    }
+                    preproc_results.append(result_item)
+                    self.logger.debug(
+                        f"Stored result item: {result_item}"
+                    )
+
+            except Exception as e:
+                self.logger.error(
+                    "Invalid or missing JSON output from preprocessor: "
+                    f"{e}"
+                )
+                return False, []
+
+        # Persist metadata and structured results on the data_package
+        if metadata_dict:
+            self.data_package[PREPROC_META_KEY] = metadata_dict
+        else:
+            self.data_package[PREPROC_META_KEY] = {}
+        if preproc_results:
+            self.data_package[PREPROC_RESULTS_KEY] = preproc_results
+        else:
+            self.data_package[PREPROC_RESULTS_KEY] = []
+
+        self.logger.debug(
+            f"Persisted preprocessing artifacts: results={self.data_package}")
+
+        return True, processed_files
 
 
 class DataPackageImporter:
@@ -756,6 +856,49 @@ class DataPackageImporter:
         return successful_uploads, failed_uploads
 
     @connection
+    def rename_image_if_needed(self, conn, image_id, original_file_path):
+        """Rename Image 1:1 to the preprocessor 'name' if it differs.
+        
+        Call after metadata update (add_image_annotations) e.g. like 
+        
+        # Optional rename (datasets only): apply preprocessor 'name' if it differs from expected
+        if not screen_id:
+            renamed = self.rename_image_if_needed(
+                conn,
+                image_or_plate_id,
+                file_path,
+            )
+            if renamed:
+                self.logger.info(
+                    f"Renamed Image {image_or_plate_id} based on preprocessing 'name'.")
+        
+        """
+        try:
+            rename_map = self.data_package.get(
+                PREPROC_RENAME_MAP_KEY, {}
+            ) or {}
+            target_name = str(
+                rename_map.get(str(original_file_path), "")
+            ).strip()
+            if not target_name:
+                return False  # No mismatch stored
+            else:
+                self.logger.debug(f"Found target name for Image {image_id}: {target_name}")
+            img = conn.getObject("Image", image_id)
+            if not img:
+                return False
+            else:
+                self.logger.debug(f"Found Image object for ID {image_id}")
+            i = img._obj
+            i.setName(rstring(target_name))
+            conn.getUpdateService().saveObject(i)
+            self.logger.info(f"Renamed Image {image_id} to '{target_name}'")
+            return True
+        except Exception as e:
+            self.logger.error(f"Rename failed for Image {image_id}: {e}")
+            return False
+
+    @connection
     def add_image_annotations(self, conn, object_id, uuid, file_path, is_screen=False, local_path=None):
         try:
             annotation_dict = {'UUID': str(uuid), 'Filepath': str(file_path)}
@@ -791,7 +934,7 @@ class DataPackageImporter:
                     annotation_dict[f'preprocessing_{key}'] = str(value)
             
             # Add preprocessing metadata from processing results
-            preprocessing_metadata = order_info.get('_preprocessing_metadata', {})
+            preprocessing_metadata = order_info.get(PREPROC_META_KEY, {})
             for processed_file_path, metadata in preprocessing_metadata.items():
                 if processed_file_path == file_path or processed_file_path == local_path:
                     self.logger.debug(f"Found preprocessing metadata for file: {processed_file_path}")
@@ -921,7 +1064,7 @@ class DataPackageImporter:
                                 os.makedirs(local_tmp_folder, exist_ok=True)
                                 log_ingestion_step(
                                     self.data_package, STAGE_PREPROCESSING)
-                                success, processed_files, processed_metadata = processor.run(dry_run=False)
+                                success, processed_files = processor.run(dry_run=False)
                                 if not success:
                                     msg = "Preprocessing failed. See container logs for details."
                                     self.logger.error(msg)
@@ -929,23 +1072,25 @@ class DataPackageImporter:
                                     self.data_package['Description'] = msg
                                     return [], [], True
                                 self.logger.info(
-                                    "Preprocessing succeeded; proceeding with upload.")
+                                    "Preprocessing succeeded; proceeding with import.")
                                 
                                 # Determine local_paths based on whether we got specific files or not
                                 if processed_files:
                                     # New JSON-based approach: use specific processed file paths
                                     local_paths = processed_files
                                     self.logger.debug(f"Using JSON-parsed file paths: {local_paths}")
-                                    if processed_metadata:
-                                        self.logger.debug(f"Found preprocessing metadata: {processed_metadata}")
                                 else:
                                     # Legacy approach: use temp folder
-                                    local_paths = [local_tmp_folder] if processor.has_preprocessing() else None
-                                    self.logger.debug(f"Using legacy folder approach: {local_paths}")
-                                    processed_metadata = {}
+                                    local_paths = (
+                                        [local_tmp_folder]
+                                        if processor.has_preprocessing()
+                                        else None
+                                    )
+                                    self.logger.debug(
+                                        f"Using legacy folder approach: {local_paths}"
+                                    )
 
-                                # Store metadata in data_package for later use in annotations
-                                self.data_package['_preprocessing_metadata'] = processed_metadata
+                                # Results already persisted by processor.run() under PREPROC_* keys
 
                                 # Pass the target id based on its type; include local paths if preprocessed
                                 if is_screen:
