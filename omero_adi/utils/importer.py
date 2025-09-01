@@ -309,38 +309,8 @@ class DataPackageImporter:
 
         self.imported = False
 
-    def import_to_omero(self, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
-        is_zarr = os.path.splitext(file_path)[1].lower() == '.zarr'
-        if is_zarr and self.use_register_zarr:
-            image_ids = self.import_zarr(
-                uri=file_path,
-                target=target_id,
-                target_type=target_type,
-            )
-            if target_type == 'Screen':
-                _, local_file_dir = self.get_plate_ids(
-                    str(file_path), target_id)
-            else:
-                local_file_dir = file_path
-        else:
-            imported = self.import_to_omero_nozarr(
-                file_path=file_path,
-                target_id=target_id,
-                target_type=target_type,
-                uuid=uuid,
-                transfer_type=transfer_type,
-                depth=depth
-            )
-            if target_type == 'Screen':
-                image_ids, local_file_dir = self.get_plate_ids(
-                    str(file_path), target_id)
-            else:
-                image_ids = target_id
-                local_file_dir = file_path
-        return image_ids, local_file_dir
-
     @connection
-    def import_to_omero_nozarr(self, conn, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
+    def import_to_omero(self, conn, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
         self.logger.debug(
             f"Starting import to OMERO for file: {file_path}, Target: {target_id} ({target_type})")
         cli = CLI()
@@ -519,24 +489,8 @@ class DataPackageImporter:
         template_prefixes = [r[0].val for r in results]
         return [], template_prefixes  # Return format consistent with get_plate_ids
 
-    def import_dataset(self, target, dataset, transfer="ln_s", depth=None):
-        is_zarr = os.path.splitext(target)[1].lower() == '.zarr'
-        if is_zarr and self.use_register_zarr:
-            return self.import_zarr(
-                uri=dataset,
-                target=target,
-                target_type='Dataset',
-            )
-        else:
-            return self.import_dataset_nozarr(
-                target=target,
-                dataset=dataset,
-                transfer=transfer,
-                depth=depth
-            )
-
     @connection
-    def import_dataset_nozarr(self, conn, target, dataset, transfer="ln_s", depth=None):
+    def import_dataset(self, conn, target, dataset, transfer="ln_s", depth=None):
         kwargs = {"transfer": transfer}
         if 'parallel_upload_per_worker' in self.config:
             kwargs['parallel-upload'] = str(
@@ -580,69 +534,90 @@ class DataPackageImporter:
             self.logger.debug(f"Uploading file: {file_path}")
             try:
                 if pre_processing:  # pre-processing
-                    if screen_id:   # screen
-                        image_ids, _ = self.import_to_omero(
-                            file_path=str(file_path),
-                            target_id=screen_id,
-                            target_type='Screen',
-                            uuid=uuid,
-                            depth=10
+                    local_path = local_paths[i]
+                    is_zarr = 'zar' in os.path.splitext(local_path)[1].lower()
+                    if is_zarr and self.use_register_zarr:
+                        image_ids = self.import_zarr(
+                            uri=str(local_path),
+                            target=upload_target
                         )
-                    else:   # not screen
-                        if os.path.isfile(file_path):
-                            image_ids = self.import_dataset(
-                                target=str(file_path),
-                                dataset=dataset_id,
-                                transfer="ln_s"
-                            )
-                            self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
-                        elif os.path.isdir(file_path):
-                            image_ids, _ = self.import_to_omero(
+                    else:
+                        if screen_id:   # screen
+                            imported = self.import_to_omero(
                                 file_path=str(file_path),
-                                target_id=dataset_id,
-                                target_type='Dataset',
+                                target_id=screen_id,
+                                target_type='Screen',
                                 uuid=uuid,
                                 depth=10
                             )
-                            self.logger.debug(f"Set ids {image_ids} to the dataset {dataset_id}")
-                        else:
-                            raise ValueError(
-                                f"{file_path} is not recognized as file or directory.")
+                            image_ids, _ = self.get_plate_ids(
+                                str(file_path), screen_id)
+                        else:   # not screen
+                            if os.path.isfile(file_path):
+                                image_ids = self.import_dataset(
+                                    target=str(file_path),
+                                    dataset=dataset_id,
+                                    transfer="ln_s"
+                                )
+                                self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
+                            elif os.path.isdir(file_path):
+                                imported = self.import_to_omero(
+                                    file_path=str(file_path),
+                                    target_id=dataset_id,
+                                    target_type='Dataset',
+                                    uuid=uuid,
+                                    depth=10
+                                )
+                                image_ids = dataset_id
+                                self.logger.debug(f"Set ids {image_ids} to the dataset {dataset_id}")
+                            else:
+                                raise ValueError(
+                                    f"{file_path} is not recognized as file or directory.")
                 else:   # no pre-processing
-                    if screen_id:   # screen
-                        # If local_paths, we have done preprocessing
-                        # data is now in PROCESSED_DATA_FOLDER subfolder on remote storage
-                        # and in local_paths folder on the omero server storage
-                        # we will import now in-place from the omero server storage
-                        # and then we'll switch the in-place symlinks to the remote storage (subfolder)
-                        fp = str(local_paths[i])  # TODO: assumes 1:1 local_paths and file_paths
-                        self.logger.debug(f"Importing {fp}")
-                        image_ids, local_file_dir = self.import_to_omero(
-                            file_path=fp,
-                            target_id=screen_id,
-                            target_type='Screen',
-                            uuid=uuid,
-                            depth=10
+                    is_zarr = 'zar' in os.path.splitext(file_path)[1].lower()
+                    if is_zarr and self.use_register_zarr:
+                        image_ids = self.import_zarr(
+                            uri=str(file_path),
+                            target=upload_target
                         )
-                        self.logger.debug("Upload done.")
-                    else:   # not screen
-                        if os.path.isfile(fp):
-                            image_ids = self.import_dataset(
-                                target=fp,
-                                dataset=dataset_id,
-                                transfer="ln_s"
-                            )
-                        else:
-                            image_ids, _ = self.import_to_omero(
+                    else:
+                        if screen_id:   # screen
+                            # If local_paths, we have done preprocessing
+                            # data is now in PROCESSED_DATA_FOLDER subfolder on remote storage
+                            # and in local_paths folder on the omero server storage
+                            # we will import now in-place from the omero server storage
+                            # and then we'll switch the in-place symlinks to the remote storage (subfolder)
+                            fp = str(local_paths[i])  # TODO: assumes 1:1 local_paths and file_paths
+                            self.logger.debug(f"Importing {fp}")
+                            imported = self.import_to_omero(
                                 file_path=fp,
-                                target_id=dataset_id,
-                                target_type='Dataset',
+                                target_id=screen_id,
+                                target_type='Screen',
                                 uuid=uuid,
                                 depth=10
                             )
+                            self.logger.debug("Upload done.")
+                            image_ids, local_file_dir = self.get_plate_ids(
+                                str(file_path), target_id)
+                        else:   # not screen
+                            if os.path.isfile(fp):
+                                image_ids = self.import_dataset(
+                                    target=fp,
+                                    dataset=dataset_id,
+                                    transfer="ln_s"
+                                )
+                            else:
+                                imported = self.import_to_omero(
+                                    file_path=fp,
+                                    target_id=dataset_id,
+                                    target_type='Dataset',
+                                    uuid=uuid,
+                                    depth=10
+                                )
+                                image_ids = dataset_id
 
-                        # Get the OMERO storage path for datasets
-                        _, local_file_dir = self.get_image_paths(str(local_paths[i]), dataset_id)
+                            # Get the OMERO storage path for datasets
+                            _, local_file_dir = self.get_image_paths(str(local_paths[i]), dataset_id)
 
                     # TODO: assumes 1:1 local_paths and file_paths
                     # Rest of symlink logic...
