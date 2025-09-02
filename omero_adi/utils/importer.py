@@ -6,6 +6,7 @@ import functools
 import time
 from subprocess import Popen, PIPE, STDOUT
 from importlib import import_module
+from pathlib import PurePath
 
 import ezomero
 from omero.gateway import BlitzGateway
@@ -24,6 +25,17 @@ MAX_RETRIES = 5  # Maximum number of retries
 RETRY_DELAY = 5  # Delay between retries (in seconds)
 TMP_OUTPUT_FOLDER = "OMERO_inplace"
 PROCESSED_DATA_FOLDER = ".processed"
+
+# Canonical keys for storing preprocessing artifacts on the data_package
+PREPROC_META_KEY = "_preprocessing_metadata"
+PREPROC_RESULTS_KEY = "_preprocessing_results"
+PREPROC_RENAME_MAP_KEY = "_preprocessing_rename_map"
+
+# Keys inside each item of PREPROC_RESULTS_KEY
+PREPROC_RESULT_NAME = "name"
+PREPROC_RESULT_LOCAL_ALT = "local_alt_path"
+PREPROC_RESULT_LOCAL_FULL = "local_full_path"
+PREPROC_RESULT_METADATA = "metadata"
 
 
 def get_tmp_output_path(data_package):
@@ -185,45 +197,61 @@ class DataProcessor:
             self.logger.debug('sub: %r', line)
 
     def build_podman_command(self, file_path):
-        """Construct the full Podman command based on preprocessing parameters."""
+        """Construct the full Podman command based on preprocessing parameters.
+
+        Returns (podman_command, mount_paths) so mount_paths can be reused
+        as the single source of truth for container<->host mapping.
+        """
         container, kwargs, mount_paths = self.get_preprocessing_args(file_path)
         if not container:
             self.logger.warning("No container specified for podman command.")
-            return None
+            return None, None
 
         podman_settings = ["podman", "run", "--rm"]
-        
+
         # Check if user namespace mapping is available/desired
         userns_mode = os.getenv("PODMAN_USERNS_MODE", "auto").lower()
-        
+
         if userns_mode == "keep-id":
             podman_settings.append("--userns=keep-id")
             self.logger.debug("Added --userns=keep-id for user namespace mapping. This allows running non-root containers.")
         else:
             self.logger.debug(f"Using default podman user mapping (userns_mode: {userns_mode}). This means only root containers can be run.")
-        
+
         for src, dst in mount_paths:
             podman_settings += ["-v", f"{src}:{dst}"]
         podman_command = podman_settings + [container] + kwargs
         self.logger.info(f"Podman command: {' '.join(podman_command)}")
-        return podman_command
-
+        return podman_command, mount_paths
+    
     def run(self, dry_run=False):
-        """Execute the podman command for preprocessing."""
+        """Execute preprocessing containers and parse their JSON output.
+
+        Contract:
+        - Container must emit a single JSON line on stdout as the last line.
+        - JSON is a list of items with keys: name, full_path, alt_path,
+          and optional keyvalues (list[dict] or dict).
+        - Persist structured results and metadata on data_package under
+          PREPROC_RESULTS_KEY and PREPROC_META_KEY.
+
+        Return: (success: bool, processed_paths: list[str]) where processed_paths
+        are host paths mapped from alt_path using the same mount_paths passed to podman.
+        """
         if not self.has_preprocessing():
             self.logger.info("No preprocessing required.")
-            return True, [], {}
+            return True, []
 
         file_paths = self.data_package.get("Files", [])
         processed_files = []
-        metadata_dict = {}  # Store metadata for each processed file
-        
+        metadata_dict = {}
+        preproc_results = []
+
         for file_path in file_paths:
             self.logger.info(f"Preprocessing file: {file_path}")
-            podman_command = self.build_podman_command(file_path)
+            podman_command, mount_paths = self.build_podman_command(file_path)
             if not podman_command:
                 self.logger.error("Failed to build podman command.")
-                return False, [], {}
+                return False, []
 
             if dry_run:
                 self.logger.info(f"Dry run: {' '.join(podman_command)}")
@@ -231,56 +259,151 @@ class DataProcessor:
 
             process = Popen(podman_command, stdout=PIPE, stderr=STDOUT)
             output_lines = []
-            json_parsed = False
-            
+
             with process.stdout:
                 for line in iter(process.stdout.readline, b''):
                     line_str = line.decode().strip()
                     output_lines.append(line_str)
                     self.logger.debug('sub: %r', line)
-    
-            if process.wait() == 0:
-                self.logger.info("Podman command executed successfully.")
-                
-                # Try to parse JSON output from last line (new format)
-                if output_lines:
-                    try:
-                        import json
-                        json_output = json.loads(output_lines[-1])
-                        self.logger.debug(f"Found JSON output: {json_output}")
-                        
-                        # Process JSON format
-                        for item in json_output:
-                            if 'alt_path' in item:
-                                alt_path = item['alt_path']
-                                # Convert container path to actual filesystem path
-                                local_file_path = alt_path.replace('/out/', f"/OMERO/OMERO_inplace/{self.data_package.get('UUID')}/")
-                                processed_files.append(local_file_path)
-                                self.logger.debug(f"Parsed JSON: {alt_path} -> {local_file_path}")
-                                
-                                # Extract metadata if present
-                                if 'keyvalues' in item and item['keyvalues']:
-                                    # keyvalues is a list of dicts, merge them into one dict
-                                    file_metadata = {}
-                                    for kv_dict in item['keyvalues']:
-                                        if isinstance(kv_dict, dict):
-                                            file_metadata.update(kv_dict)
-                                            
-                                    if file_metadata:
-                                        metadata_dict[local_file_path] = file_metadata
-                                        self.logger.debug(f"Extracted metadata for {local_file_path}: {file_metadata}")
-                        json_parsed = True
-                    except (json.JSONDecodeError, KeyError, TypeError) as e:
-                        self.logger.debug(f"No valid JSON output found, using legacy behavior: {e}")
-        
-                # Backward compatibility: if no JSON, use the old behavior
-                if not json_parsed:
-                    self.logger.debug("Using legacy preprocessing behavior (no JSON output)")                
-            else:
+
+            if process.wait() != 0:
                 self.logger.error("Podman command failed.")
-                return False, [], {}
-    
-        return True, processed_files, metadata_dict
+                return False, []
+
+            self.logger.info("Podman command executed successfully.")
+
+            if not output_lines:
+                self.logger.error("No output from preprocessor container.")
+                return False, []
+
+            try:
+                import json
+                raw_last = output_lines[-1]
+                json_output = json.loads(raw_last)
+                if not isinstance(json_output, list):
+                    raise TypeError("Expected a list of result items from preprocessor")
+                self.logger.debug(f"Found JSON output: {json_output}")
+
+                # Use mount_paths as the single source of truth for mapping
+                def to_host_path(container_path: str) -> str | None:
+                    if not container_path:
+                        return None
+                    for host_src, cont_dst in (mount_paths or []):
+                        if host_src and cont_dst and container_path.startswith(cont_dst.rstrip('/') + '/'):
+                            rel = container_path[len(cont_dst.rstrip('/')) + 1:]
+                            return os.path.join(host_src, rel)
+                    return None
+
+                if len(json_output) > 1:
+                    self.logger.warning(
+                        f"Preprocessor returned {len(json_output)} results for a single input. "
+                        "Handling multiple outputs per input is not implemented yet: Only first will be processed."
+                    )
+
+                for item in json_output:
+                    name = item.get('name')
+                    full_path = item.get('full_path')
+                    alt_path = item.get('alt_path')
+
+                    local_alt = to_host_path(alt_path)
+                    local_full = to_host_path(full_path)
+
+                    if local_alt:
+                        processed_files.append(local_alt)
+                        self.logger.debug(
+                            f"Mapped alt_path -> host: {alt_path} -> {local_alt}")
+                    else:
+                        self.logger.warning(
+                            "No alt_path mapping produced a host path; item will be skipped for import")
+
+                    merged_md = {}
+                    kvs = item.get('keyvalues')
+                    if isinstance(kvs, list):
+                        for kv_dict in kvs:
+                            if isinstance(kv_dict, dict):
+                                merged_md.update(kv_dict)
+                    elif isinstance(kvs, dict):
+                        merged_md.update(kvs)
+
+                    if merged_md and local_alt:
+                        metadata_dict[local_alt] = merged_md
+                        self.logger.debug(
+                            (
+                                f"Collected metadata for {local_alt}: "
+                                f"{merged_md}"
+                            )
+                        )
+
+                    # Rename decision based on output: compare filename base (handling multi-suffix like .ome.tiff) vs returned name
+                    if name and (full_path or alt_path):
+                        file_for_ext = full_path or alt_path
+                        fname = os.path.basename(file_for_ext)
+                        suffixes = PurePath(fname).suffixes  # e.g. ['.ome', '.tiff']
+                        ext_combo = ''.join(suffixes)
+                        if ext_combo:
+                            base_no_ext = fname[:-len(ext_combo)]
+                        else:
+                            base_no_ext = os.path.splitext(fname)[0]
+
+                        desired_base = str(name)
+                        # If desired name already contains the same extension combo, keep it; else append.
+                        if desired_base.endswith(ext_combo):
+                            desired_name_with_ext = desired_base
+                            desired_base_only = desired_base[: -len(ext_combo)] if ext_combo else desired_base
+                        else:
+                            desired_name_with_ext = f"{desired_base}{ext_combo}"
+                            desired_base_only = desired_base
+
+                        if desired_base_only != base_no_ext and local_alt:
+                            # Store map keyed by the actual local path used for import, value includes extension
+                            rename_map = (
+                                self.data_package.get(
+                                    PREPROC_RENAME_MAP_KEY, {}
+                                )
+                                or {}
+                            )
+                            rename_map[str(local_alt)] = desired_name_with_ext
+                            self.data_package[PREPROC_RENAME_MAP_KEY] = rename_map
+                            self.logger.debug(
+                                (
+                                    "Rename needed: base vs name differ; "
+                                    f"base='{base_no_ext}', name='{desired_base_only}', ext='{ext_combo}'. "
+                                    f"Recorded rename for {local_alt} -> '{desired_name_with_ext}'"
+                                )
+                            )
+
+                    result_item = {
+                        PREPROC_RESULT_NAME: name,
+                        PREPROC_RESULT_LOCAL_ALT: local_alt,
+                        PREPROC_RESULT_LOCAL_FULL: local_full,
+                        PREPROC_RESULT_METADATA: merged_md or None,
+                    }
+                    preproc_results.append(result_item)
+                    self.logger.debug(
+                        f"Stored result item: {result_item}"
+                    )
+
+            except Exception as e:
+                self.logger.error(
+                    "Invalid or missing JSON output from preprocessor: "
+                    f"{e}"
+                )
+                return False, []
+
+        # Persist metadata and structured results on the data_package
+        if metadata_dict:
+            self.data_package[PREPROC_META_KEY] = metadata_dict
+        else:
+            self.data_package[PREPROC_META_KEY] = {}
+        if preproc_results:
+            self.data_package[PREPROC_RESULTS_KEY] = preproc_results
+        else:
+            self.data_package[PREPROC_RESULTS_KEY] = []
+
+        self.logger.debug(
+            f"Persisted preprocessing artifacts: results={self.data_package}")
+
+        return True, processed_files
 
 
 class DataPackageImporter:
@@ -309,38 +432,8 @@ class DataPackageImporter:
 
         self.imported = False
 
-    def import_to_omero(self, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
-        is_zarr = os.path.splitext(file_path)[1].lower() == '.zarr'
-        if is_zarr and self.use_register_zarr:
-            image_ids = self.import_zarr(
-                uri=file_path,
-                target=target_id,
-                target_type=target_type,
-            )
-            if target_type == 'Screen':
-                _, local_file_dir = self.get_plate_ids(
-                    str(file_path), target_id)
-            else:
-                local_file_dir = file_path
-        else:
-            imported = self.import_to_omero_nozarr(
-                file_path=file_path,
-                target_id=target_id,
-                target_type=target_type,
-                uuid=uuid,
-                transfer_type=transfer_type,
-                depth=depth
-            )
-            if target_type == 'Screen':
-                image_ids, local_file_dir = self.get_plate_ids(
-                    str(file_path), target_id)
-            else:
-                image_ids = target_id
-                local_file_dir = file_path
-        return image_ids, local_file_dir
-
     @connection
-    def import_to_omero_nozarr(self, conn, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
+    def import_to_omero(self, conn, file_path, target_id, target_type, uuid, transfer_type="ln_s", depth=None):
         self.logger.debug(
             f"Starting import to OMERO for file: {file_path}, Target: {target_id} ({target_type})")
         cli = CLI()
@@ -394,7 +487,7 @@ class DataPackageImporter:
             return False
 
     @connection
-    def import_zarr(self, conn, uri, target, target_type, target_by_name=None, endpoint=None, nosignrequest=False):
+    def import_zarr(self, conn, uri, target, target_by_name=None, endpoint=None, nosignrequest=False):
         # Using https://github.com/BioNGFF/omero-import-utils/blob/main/metadata/register.py
         from .register import load_attrs, register_image, register_plate, link_to_target, validate_endpoint
         import zarr
@@ -403,6 +496,7 @@ class DataPackageImporter:
         file_title = os.path.splitext(os.path.basename(uri))[0].rstrip('.ome')
         args = SimpleNamespace(uri=uri, endpoint=endpoint, name=file_title,
                                nosignrequest=nosignrequest, target=target, target_by_name=target_by_name)
+        reg_paths = []
 
         # --- start copy from register.main() ---
 
@@ -454,10 +548,10 @@ class DataPackageImporter:
         image_ids = [obj.getId().getValue() for obj in objs]
         if image_ids:
             self.imported = True
-            self.logger.info(f'Import successfully for {str(uri)}')
+            self.logger.info(f'Import successfully for {uri}')
         else:
             self.imported = False
-            self.logger.error(f'Import failed for {str(uri)}')
+            self.logger.error(f'Import failed for {uri}')
         return image_ids
 
     @connection
@@ -519,24 +613,8 @@ class DataPackageImporter:
         template_prefixes = [r[0].val for r in results]
         return [], template_prefixes  # Return format consistent with get_plate_ids
 
-    def import_dataset(self, target, dataset, transfer="ln_s", depth=None):
-        is_zarr = os.path.splitext(target)[1].lower() == '.zarr'
-        if is_zarr and self.use_register_zarr:
-            return self.import_zarr(
-                uri=dataset,
-                target=target,
-                target_type='Dataset',
-            )
-        else:
-            return self.import_dataset_nozarr(
-                target=target,
-                dataset=dataset,
-                transfer=transfer,
-                depth=depth
-            )
-
     @connection
-    def import_dataset_nozarr(self, conn, target, dataset, transfer="ln_s", depth=None):
+    def import_dataset(self, conn, target, dataset, transfer="ln_s", depth=None):
         kwargs = {"transfer": transfer}
         if 'parallel_upload_per_worker' in self.config:
             kwargs['parallel-upload'] = str(
@@ -574,138 +652,94 @@ class DataPackageImporter:
         failed_uploads = []
         self.logger.debug(f"Uploading files: {file_paths}")
         upload_target = dataset_id or screen_id
+        pre_processing = local_paths is not None
 
         for i, file_path in enumerate(file_paths):
             self.logger.debug(f"Uploading file: {file_path}")
             try:
-                if screen_id:
-                    if not local_paths:
-                        image_ids, _ = self.import_to_omero(
-                            file_path=str(file_path),
-                            target_id=screen_id,
-                            target_type='Screen',
-                            uuid=uuid,
-                            depth=10
+                if pre_processing:  # pre-processing
+                    local_path = local_paths[i]  # TODO: assumes 1:1 local_paths and file_paths
+                    is_zarr = 'zar' in os.path.splitext(local_path)[1].lower()
+                    if is_zarr and self.use_register_zarr:
+                        result_entry = self.data_package[
+                            PREPROC_RESULTS_KEY
+                        ][i]
+                        full_path = result_entry[PREPROC_RESULT_LOCAL_FULL]
+                        self.logger.debug(f"Importing {full_path}")
+                        image_ids = self.import_zarr(
+                            uri=str(full_path),
+                            target=upload_target
                         )
                     else:
-                        # If local_paths, we have done preprocessing
-                        # data is now in PROCESSED_DATA_FOLDER subfolder on remote storage
-                        # and in local_paths folder on the omero server storage
-                        # we will import now in-place from the omero server storage
-                        # and then we'll switch the in-place symlinks to the remote storage (subfolder)
-                        fp = str(local_paths[i])  # TODO: assumes 1:1 local_paths and file_paths
-                        self.logger.debug(f"Importing {fp}")
-                        image_ids, local_file_dir = self.import_to_omero(
-                            file_path=fp,
-                            target_id=screen_id,
-                            target_type='Screen',
-                            uuid=uuid,
-                            depth=10
-                        )
-                        self.logger.debug("Upload done, retrieved plate id.")
-                        # TODO: assumes 1:1 local_paths and file_paths
-
-                        # rsync file to remote and point symlink there
-                        # Ensure remote_path is the directory itself if file_path is a directory
-                        remote_path = file_path if os.path.isdir(
-                            file_path) else os.path.dirname(file_path)
-                        # select the PROCESSED_DATA_FOLDER subfolder with processed data
-                        remote_path = os.path.join(remote_path, PROCESSED_DATA_FOLDER)
-
-                        local_file_dir = local_file_dir[0].rstrip("/") + "/"
-                        local_file_dir = "/OMERO/ManagedRepository/" + local_file_dir
-                        # self.logger.debug(f"Move {local_file_dir} to {remote_path}")
-                        # 1. Rsync the actual files to the remote location
-                        # rsync_command = [
-                        #     "rsync", "-av", "--copy-links",  # Copy actual files instead of symlinks
-                        #     local_file_dir,  # Already guaranteed to have a trailing slash
-                        #     remote_path
-                        # ]
-                        # self.logger.info(f"Rsync command: {rsync_command}")
-                        # subprocess.run(rsync_command, check=True)
-                        # 2. Update the symlinks to point to the remote location
-                        self.logger.info(
-                            f"Now update symlinks in {local_file_dir} to {remote_path}")
-                        for root, _, files in os.walk(local_file_dir):
-                            for file in files:
-                                symlink_path = os.path.join(root, file)
-                                # Only process symlinks
-                                if os.path.islink(symlink_path):
-                                    # Update symlink to point to remote location
-                                    # Remove the old symlink
-                                    os.unlink(symlink_path)
-                                    new_target = os.path.join(
-                                        remote_path, file)
-                                    # Create the new symlink
-                                    os.symlink(new_target, symlink_path)
-                                    self.logger.debug(
-                                        f"new symlinks {symlink_path} -> {new_target}")
-
-                        # Defer cleanup; handled after all files are processed
-                    upload_target = screen_id
-                else:
-                    if not local_paths:
-                        # Original dataset import logic
-                        if os.path.isfile(file_path):
-                            image_ids = self.import_dataset(
-                                target=str(file_path),
-                                dataset=dataset_id,
-                                transfer="ln_s"
-                            )
-                            self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
-                        elif os.path.isdir(file_path):
-                            image_ids, _ = self.import_to_omero(
-                                file_path=str(file_path),
-                                target_id=dataset_id,
-                                target_type='Dataset',
+                        self.logger.debug(f"Importing {local_path}")
+                        if screen_id:   # screen
+                            # If local_paths, we have done preprocessing
+                            # data is now in PROCESSED_DATA_FOLDER subfolder on remote storage
+                            # and in local_paths folder on the omero server storage
+                            # we will import now in-place from the omero server storage
+                            # and then we'll switch the in-place symlinks to the remote storage (subfolder)
+                            imported = self.import_to_omero(
+                                file_path=local_path,
+                                target_id=screen_id,
+                                target_type='Screen',
                                 uuid=uuid,
                                 depth=10
                             )
-                            self.logger.debug(f"Set ids {image_ids} to the dataset {dataset_id}")
-                        else:
-                            raise ValueError(
-                                f"{file_path} is not recognized as file or directory.")
-                    else:
-                        # Preprocessed dataset import logic
-                        fp = str(local_paths[i])  # TODO: assumes 1:1 local_paths and file_paths
-                        self.logger.debug(f"Importing {fp}")
+                            self.logger.debug("Upload done. Retrieving plate id.")
+                            image_ids, local_file_dir = self.get_plate_ids(
+                                str(local_path), screen_id)
 
-                        if os.path.isfile(fp):
-                            image_ids = self.import_dataset(
-                                target=fp,
-                                dataset=dataset_id,
-                                transfer="ln_s"
-                            )
-                        else:
-                            image_ids, _ = self.import_to_omero(
-                                file_path=fp,
-                                target_id=dataset_id,
-                                target_type='Dataset',
-                                uuid=uuid,
-                                depth=10
-                            )
+                        else:   # no screen
+                            if os.path.isfile(local_path):
+                                image_ids = self.import_dataset(
+                                    target=local_path,
+                                    dataset=dataset_id,
+                                    transfer="ln_s"
+                                )
+                                self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
+                            else:
+                                imported = self.import_to_omero(
+                                    file_path=local_path,
+                                    target_id=dataset_id,
+                                    target_type='Dataset',
+                                    uuid=uuid,
+                                    depth=10
+                                )
+                                image_ids = dataset_id
 
-                        # Get the OMERO storage path for datasets
-                        _, local_file_dir = self.get_image_paths(str(local_paths[i]), dataset_id)
-                        # TODO: assumes 1:1 local_paths and file_paths
+                            # Get the OMERO storage path for datasets
+                            _, local_file_dir = self.get_image_paths(str(local_path), dataset_id)
+                            
+                            # Attempt to rename the imported Image
+                            # to match the preprocessor-provided name (datasets only).
+                            try:
+                                # Only attempt when we have concrete Image IDs (typical for single-file imports)
+                                if isinstance(image_ids, list) and image_ids:
+                                    image_id_for_rename = max(image_ids)
+                                    if self.rename_image_if_needed(
+                                        conn, image_id_for_rename, local_path
+                                    ):
+                                        self.logger.info(
+                                            (
+                                                "Renamed Image "
+                                                f"{image_id_for_rename} based on preprocessing 'name'."
+                                            )
+                                        )
+                            except Exception as e:
+                                self.logger.error(f"Post-symlink rename check failed: {e}")
+
                         # Rest of symlink logic...
                         # Ensure remote_path is the directory itself if file_path is a directory
-                        remote_path = file_path if os.path.isdir(
-                            file_path) else os.path.dirname(file_path)
-                        # select the PROCESSED_DATA_FOLDER subfolder with processed data
-                        remote_path = os.path.join(remote_path, PROCESSED_DATA_FOLDER)
+                        result_entry = self.data_package[
+                            PREPROC_RESULTS_KEY
+                        ][i]
+                        full_path = result_entry[PREPROC_RESULT_LOCAL_FULL]
+                        remote_path = full_path if os.path.isdir(
+                            full_path) else os.path.dirname(full_path)
 
                         local_file_dir = local_file_dir[0].rstrip("/") + "/"
                         local_file_dir = "/OMERO/ManagedRepository/" + local_file_dir
-                        # self.logger.debug(f"Move {local_file_dir} to {remote_path}")
-                        # 1. Rsync the actual files to the remote location
-                        # rsync_command = [
-                        #     "rsync", "-av", "--copy-links",  # Copy actual files instead of symlinks
-                        #     local_file_dir,  # Already guaranteed to have a trailing slash
-                        #     remote_path
-                        # ]
-                        # self.logger.info(f"Rsync command: {rsync_command}")
-                        # subprocess.run(rsync_command, check=True)
+                       
                         # 2. Update the symlinks to point to the remote location
                         self.logger.info(
                             f"Now update symlinks in {local_file_dir} to {remote_path}")
@@ -723,8 +757,51 @@ class DataPackageImporter:
                                     os.symlink(new_target, symlink_path)
                                     self.logger.debug(
                                         f"new symlinks {symlink_path} -> {new_target}")
-
                         # Defer cleanup; handled after all files are processed
+
+                else:   # no pre-processing
+                    local_path = None
+                    is_zarr = 'zar' in os.path.splitext(file_path)[1].lower()
+                    if is_zarr and self.use_register_zarr:
+                        image_ids = self.import_zarr(
+                            uri=str(file_path),
+                            target=upload_target
+                        )
+                    else:
+                        if screen_id:   # screen
+                            imported = self.import_to_omero(
+                                file_path=str(file_path),
+                                target_id=screen_id,
+                                target_type='Screen',
+                                uuid=uuid,
+                                depth=10
+                            )
+                            image_ids, _ = self.get_plate_ids(
+                                str(file_path), screen_id)
+                        else:   # no screen
+                            if os.path.isfile(file_path):
+                                image_ids = self.import_dataset(
+                                    target=str(file_path),
+                                    dataset=dataset_id,
+                                    transfer="ln_s"
+                                )
+                                self.logger.debug(f"EZimport returned ids {image_ids} for {str(file_path)} ({dataset_id})")
+                            elif os.path.isdir(file_path):
+                                imported = self.import_to_omero(
+                                    file_path=str(file_path),
+                                    target_id=dataset_id,
+                                    target_type='Dataset',
+                                    uuid=uuid,
+                                    depth=10
+                                )
+                                image_ids = dataset_id
+                                self.logger.debug(f"Set ids {image_ids} to the dataset {dataset_id}")
+                            else:
+                                raise ValueError(
+                                    f"{file_path} is not recognized as file or directory.")
+                if screen_id:
+                    upload_target = screen_id
+                else:
                     upload_target = dataset_id
 
                 if image_ids:
@@ -735,8 +812,14 @@ class DataPackageImporter:
                     self.logger.debug(f"Postprocessing ids {image_ids}: max ID = {image_or_plate_id}")
                     try:
                         self.add_image_annotations(
-                            conn, image_or_plate_id, uuid, file_path, is_screen=bool(screen_id),
-                            local_path=local_paths[i] if local_paths else None)
+                            conn,
+                            image_or_plate_id,
+                            uuid,
+                            file_path,
+                            is_screen=bool(screen_id),
+                            local_path=local_path,
+                        )
+
                         self.logger.info(
                             f"Uploaded file: {file_path} to target: {upload_target} with ID: {image_or_plate_id}")
                     except Exception as annotation_error:
@@ -754,6 +837,38 @@ class DataPackageImporter:
                 failed_uploads.append(
                     (file_path, upload_target, os.path.basename(file_path), None))
         return successful_uploads, failed_uploads
+
+    @connection
+    def rename_image_if_needed(self, conn, image_id, local_path):
+        """Rename Image 1:1 to the preprocessor 'name' using local output path.
+
+        Looks up PREPROC_RENAME_MAP_KEY by the processed local path used for import.
+        Returns True if renamed, else False.
+        """
+        try:
+            rename_map = self.data_package.get(
+                PREPROC_RENAME_MAP_KEY, {}
+            ) or {}
+            target_name = str(
+                rename_map.get(str(local_path), "")
+            ).strip()
+            if not target_name:
+                return False  # No mismatch stored
+            else:
+                self.logger.debug(f"Found target name for Image {image_id}: {target_name}")
+            img = conn.getObject("Image", image_id)
+            if not img:
+                return False
+            else:
+                self.logger.debug(f"Found Image object for ID {image_id}")
+            i = img._obj
+            i.setName(rstring(target_name))
+            conn.getUpdateService().saveObject(i)
+            self.logger.info(f"Renamed Image {image_id} to '{target_name}'")
+            return True
+        except Exception as e:
+            self.logger.error(f"Rename failed for Image {image_id}: {e}")
+            return False
 
     @connection
     def add_image_annotations(self, conn, object_id, uuid, file_path, is_screen=False, local_path=None):
@@ -791,7 +906,7 @@ class DataPackageImporter:
                     annotation_dict[f'preprocessing_{key}'] = str(value)
             
             # Add preprocessing metadata from processing results
-            preprocessing_metadata = order_info.get('_preprocessing_metadata', {})
+            preprocessing_metadata = order_info.get(PREPROC_META_KEY, {})
             for processed_file_path, metadata in preprocessing_metadata.items():
                 if processed_file_path == file_path or processed_file_path == local_path:
                     self.logger.debug(f"Found preprocessing metadata for file: {processed_file_path}")
@@ -921,7 +1036,7 @@ class DataPackageImporter:
                                 os.makedirs(local_tmp_folder, exist_ok=True)
                                 log_ingestion_step(
                                     self.data_package, STAGE_PREPROCESSING)
-                                success, processed_files, processed_metadata = processor.run(dry_run=False)
+                                success, processed_files = processor.run(dry_run=False)
                                 if not success:
                                     msg = "Preprocessing failed. See container logs for details."
                                     self.logger.error(msg)
@@ -929,23 +1044,25 @@ class DataPackageImporter:
                                     self.data_package['Description'] = msg
                                     return [], [], True
                                 self.logger.info(
-                                    "Preprocessing succeeded; proceeding with upload.")
+                                    "Preprocessing succeeded; proceeding with import.")
                                 
                                 # Determine local_paths based on whether we got specific files or not
                                 if processed_files:
                                     # New JSON-based approach: use specific processed file paths
                                     local_paths = processed_files
                                     self.logger.debug(f"Using JSON-parsed file paths: {local_paths}")
-                                    if processed_metadata:
-                                        self.logger.debug(f"Found preprocessing metadata: {processed_metadata}")
                                 else:
                                     # Legacy approach: use temp folder
-                                    local_paths = [local_tmp_folder] if processor.has_preprocessing() else None
-                                    self.logger.debug(f"Using legacy folder approach: {local_paths}")
-                                    processed_metadata = {}
+                                    local_paths = (
+                                        [local_tmp_folder]
+                                        if processor.has_preprocessing()
+                                        else None
+                                    )
+                                    self.logger.debug(
+                                        f"Using legacy folder approach: {local_paths}"
+                                    )
 
-                                # Store metadata in data_package for later use in annotations
-                                self.data_package['_preprocessing_metadata'] = processed_metadata
+                                # Results already persisted by processor.run() under PREPROC_* keys
 
                                 # Pass the target id based on its type; include local paths if preprocessed
                                 if is_screen:
