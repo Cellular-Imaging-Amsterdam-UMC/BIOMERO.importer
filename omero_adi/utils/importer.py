@@ -30,6 +30,12 @@ PREPROC_META_KEY = "_preprocessing_metadata"
 PREPROC_RESULTS_KEY = "_preprocessing_results"
 PREPROC_RENAME_MAP_KEY = "_preprocessing_rename_map"
 
+# Keys inside each item of PREPROC_RESULTS_KEY
+PREPROC_RESULT_NAME = "name"
+PREPROC_RESULT_LOCAL_ALT = "local_alt_path"
+PREPROC_RESULT_LOCAL_FULL = "local_full_path"
+PREPROC_RESULT_METADATA = "metadata"
+
 
 def get_tmp_output_path(data_package):
     """
@@ -352,10 +358,10 @@ class DataProcessor:
                             )
 
                     result_item = {
-                        'name': name,
-                        'local_alt_path': local_alt,
-                        'local_full_path': local_full,
-                        'metadata': merged_md or None
+                        PREPROC_RESULT_NAME: name,
+                        PREPROC_RESULT_LOCAL_ALT: local_alt,
+                        PREPROC_RESULT_LOCAL_FULL: local_full,
+                        PREPROC_RESULT_METADATA: merged_md or None,
                     }
                     preproc_results.append(result_item)
                     self.logger.debug(
@@ -640,7 +646,10 @@ class DataPackageImporter:
                     local_path = local_paths[i]  # TODO: assumes 1:1 local_paths and file_paths
                     is_zarr = 'zar' in os.path.splitext(local_path)[1].lower()
                     if is_zarr and self.use_register_zarr:
-                        full_path = self.data_package[PREPROC_RESULTS_KEY][i]['local_full_path']
+                        result_entry = self.data_package[
+                            PREPROC_RESULTS_KEY
+                        ][i]
+                        full_path = result_entry[PREPROC_RESULT_LOCAL_FULL]
                         self.logger.debug(f"Importing {full_path}")
                         image_ids = self.import_zarr(
                             uri=str(full_path),
@@ -688,22 +697,16 @@ class DataPackageImporter:
 
                         # Rest of symlink logic...
                         # Ensure remote_path is the directory itself if file_path is a directory
-                        remote_path = file_path if os.path.isdir(
-                            file_path) else os.path.dirname(file_path)
-                        # select the PROCESSED_DATA_FOLDER subfolder with processed data
-                        remote_path = os.path.join(remote_path, PROCESSED_DATA_FOLDER)
+                        result_entry = self.data_package[
+                            PREPROC_RESULTS_KEY
+                        ][i]
+                        full_path = result_entry[PREPROC_RESULT_LOCAL_FULL]
+                        remote_path = full_path if os.path.isdir(
+                            full_path) else os.path.dirname(full_path)
 
                         local_file_dir = local_file_dir[0].rstrip("/") + "/"
                         local_file_dir = "/OMERO/ManagedRepository/" + local_file_dir
-                        # self.logger.debug(f"Move {local_file_dir} to {remote_path}")
-                        # 1. Rsync the actual files to the remote location
-                        # rsync_command = [
-                        #     "rsync", "-av", "--copy-links",  # Copy actual files instead of symlinks
-                        #     local_file_dir,  # Already guaranteed to have a trailing slash
-                        #     remote_path
-                        # ]
-                        # self.logger.info(f"Rsync command: {rsync_command}")
-                        # subprocess.run(rsync_command, check=True)
+                       
                         # 2. Update the symlinks to point to the remote location
                         self.logger.info(
                             f"Now update symlinks in {local_file_dir} to {remote_path}")
