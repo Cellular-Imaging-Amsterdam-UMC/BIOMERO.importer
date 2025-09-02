@@ -7,6 +7,7 @@ dist/
 build/
 test_logfile.log
 omero_adi.egg-info/
+omeroadi.egg-info/
 .pytest_cache/
 **/__pycache__
 .coverage

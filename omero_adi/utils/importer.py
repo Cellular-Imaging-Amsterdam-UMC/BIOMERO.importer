@@ -694,6 +694,24 @@ class DataPackageImporter:
 
                             # Get the OMERO storage path for datasets
                             _, local_file_dir = self.get_image_paths(str(local_path), dataset_id)
+                            
+                            # Attempt to rename the imported Image
+                            # to match the preprocessor-provided name (datasets only).
+                            try:
+                                # Only attempt when we have concrete Image IDs (typical for single-file imports)
+                                if isinstance(image_ids, list) and image_ids:
+                                    image_id_for_rename = max(image_ids)
+                                    if self.rename_image_if_needed(
+                                        conn, image_id_for_rename, local_path
+                                    ):
+                                        self.logger.info(
+                                            (
+                                                "Renamed Image "
+                                                f"{image_id_for_rename} based on preprocessing 'name' after symlink update."
+                                            )
+                                        )
+                            except Exception as e:
+                                self.logger.error(f"Post-symlink rename check failed: {e}")
 
                         # Rest of symlink logic...
                         # Ensure remote_path is the directory itself if file_path is a directory
