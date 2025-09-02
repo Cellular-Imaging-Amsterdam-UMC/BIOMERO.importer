@@ -6,6 +6,7 @@ import functools
 import time
 from subprocess import Popen, PIPE, STDOUT
 from importlib import import_module
+from pathlib import PurePath
 
 import ezomero
 from omero.gateway import BlitzGateway
@@ -333,27 +334,41 @@ class DataProcessor:
                             )
                         )
 
-                    # Rename decision based on output: compare full_path filename vs returned name
-                    if full_path and name:
-                        full_base = os.path.splitext(
-                            os.path.basename(full_path)
-                        )[0]
-                        name_base = os.path.splitext(str(name))[0]
-                        if name_base != full_base and local_alt:
-                            # Store map keyed by the actual local path used for import
+                    # Rename decision based on output: compare filename base (handling multi-suffix like .ome.tiff) vs returned name
+                    if name and (full_path or alt_path):
+                        file_for_ext = full_path or alt_path
+                        fname = os.path.basename(file_for_ext)
+                        suffixes = PurePath(fname).suffixes  # e.g. ['.ome', '.tiff']
+                        ext_combo = ''.join(suffixes)
+                        if ext_combo:
+                            base_no_ext = fname[:-len(ext_combo)]
+                        else:
+                            base_no_ext = os.path.splitext(fname)[0]
+
+                        desired_base = str(name)
+                        # If desired name already contains the same extension combo, keep it; else append.
+                        if desired_base.endswith(ext_combo):
+                            desired_name_with_ext = desired_base
+                            desired_base_only = desired_base[: -len(ext_combo)] if ext_combo else desired_base
+                        else:
+                            desired_name_with_ext = f"{desired_base}{ext_combo}"
+                            desired_base_only = desired_base
+
+                        if desired_base_only != base_no_ext and local_alt:
+                            # Store map keyed by the actual local path used for import, value includes extension
                             rename_map = (
                                 self.data_package.get(
                                     PREPROC_RENAME_MAP_KEY, {}
                                 )
                                 or {}
                             )
-                            rename_map[str(local_alt)] = str(name)
+                            rename_map[str(local_alt)] = desired_name_with_ext
                             self.data_package[PREPROC_RENAME_MAP_KEY] = rename_map
                             self.logger.debug(
                                 (
-                                    "Rename needed: full_path base vs name differ; "
-                                    f"full='{full_base}', name='{name_base}'. "
-                                    f"Recorded rename for {local_alt} -> '{name}'"
+                                    "Rename needed: base vs name differ; "
+                                    f"base='{base_no_ext}', name='{desired_base_only}', ext='{ext_combo}'. "
+                                    f"Recorded rename for {local_alt} -> '{desired_name_with_ext}'"
                                 )
                             )
 
@@ -707,7 +722,7 @@ class DataPackageImporter:
                                         self.logger.info(
                                             (
                                                 "Renamed Image "
-                                                f"{image_id_for_rename} based on preprocessing 'name' after symlink update."
+                                                f"{image_id_for_rename} based on preprocessing 'name'."
                                             )
                                         )
                             except Exception as e:
@@ -804,18 +819,7 @@ class DataPackageImporter:
                             is_screen=bool(screen_id),
                             local_path=local_path,
                         )
-                        # Optional rename (datasets only): apply preprocessor 'name'
-                        # if it differs from output filename, keyed by local processed path
-                        if not screen_id and local_path:
-                            if self.rename_image_if_needed(
-                                conn, image_or_plate_id, local_path
-                            ):
-                                self.logger.info(
-                                    (
-                                        "Renamed Image "
-                                        f"{image_or_plate_id} based on preprocessing 'name'."
-                                    )
-                                )
+
                         self.logger.info(
                             f"Uploaded file: {file_path} to target: {upload_target} with ID: {image_or_plate_id}")
                     except Exception as annotation_error:
