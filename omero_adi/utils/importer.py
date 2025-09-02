@@ -351,17 +351,11 @@ class DataProcessor:
                                 )
                             )
 
-                    is_processed = bool(
-                        full_path and f"/{PROCESSED_DATA_FOLDER}/" in full_path
-                    )
                     result_item = {
                         'name': name,
-                        'full_path': full_path,
-                        'alt_path': alt_path,
                         'local_alt_path': local_alt,
                         'local_full_path': local_full,
-                        'metadata': merged_md or None,
-                        'full_is_processed': is_processed,
+                        'metadata': merged_md or None
                     }
                     preproc_results.append(result_item)
                     self.logger.debug(
@@ -533,13 +527,11 @@ class DataPackageImporter:
         image_ids = [obj.getId().getValue() for obj in objs]
         if image_ids:
             self.imported = True
-            if "plate" in zattrs:
-                _, reg_paths = self.get_plate_ids(uri, target)
-                self.logger.info(f'Import successfully for {uri}')
+            self.logger.info(f'Import successfully for {uri}')
         else:
             self.imported = False
             self.logger.error(f'Import failed for {uri}')
-        return image_ids, reg_paths
+        return image_ids
 
     @connection
     def get_plate_ids(self, conn, file_path, screen_id):
@@ -646,22 +638,22 @@ class DataPackageImporter:
             try:
                 if pre_processing:  # pre-processing
                     local_path = local_paths[i]  # TODO: assumes 1:1 local_paths and file_paths
-                    self.logger.debug(f"Importing {local_path}")
-
                     is_zarr = 'zar' in os.path.splitext(local_path)[1].lower()
                     if is_zarr and self.use_register_zarr:
-                        image_ids, local_file_dir = self.import_zarr(
-                            uri=str(local_path),
+                        full_path = self.data_package[PREPROC_RESULTS_KEY][i]['local_full_path']
+                        self.logger.debug(f"Importing {full_path}")
+                        image_ids = self.import_zarr(
+                            uri=str(full_path),
                             target=upload_target
                         )
                     else:
+                        self.logger.debug(f"Importing {local_path}")
                         if screen_id:   # screen
                             # If local_paths, we have done preprocessing
                             # data is now in PROCESSED_DATA_FOLDER subfolder on remote storage
                             # and in local_paths folder on the omero server storage
                             # we will import now in-place from the omero server storage
                             # and then we'll switch the in-place symlinks to the remote storage (subfolder)
-                            self.logger.debug(f"Importing {local_path}")
                             imported = self.import_to_omero(
                                 file_path=local_path,
                                 target_id=screen_id,
@@ -694,48 +686,48 @@ class DataPackageImporter:
                             # Get the OMERO storage path for datasets
                             _, local_file_dir = self.get_image_paths(str(local_path), dataset_id)
 
-                    # Rest of symlink logic...
-                    # Ensure remote_path is the directory itself if file_path is a directory
-                    remote_path = file_path if os.path.isdir(
-                        file_path) else os.path.dirname(file_path)
-                    # select the PROCESSED_DATA_FOLDER subfolder with processed data
-                    remote_path = os.path.join(remote_path, PROCESSED_DATA_FOLDER)
+                        # Rest of symlink logic...
+                        # Ensure remote_path is the directory itself if file_path is a directory
+                        remote_path = file_path if os.path.isdir(
+                            file_path) else os.path.dirname(file_path)
+                        # select the PROCESSED_DATA_FOLDER subfolder with processed data
+                        remote_path = os.path.join(remote_path, PROCESSED_DATA_FOLDER)
 
-                    local_file_dir = local_file_dir[0].rstrip("/") + "/"
-                    local_file_dir = "/OMERO/ManagedRepository/" + local_file_dir
-                    # self.logger.debug(f"Move {local_file_dir} to {remote_path}")
-                    # 1. Rsync the actual files to the remote location
-                    # rsync_command = [
-                    #     "rsync", "-av", "--copy-links",  # Copy actual files instead of symlinks
-                    #     local_file_dir,  # Already guaranteed to have a trailing slash
-                    #     remote_path
-                    # ]
-                    # self.logger.info(f"Rsync command: {rsync_command}")
-                    # subprocess.run(rsync_command, check=True)
-                    # 2. Update the symlinks to point to the remote location
-                    self.logger.info(
-                        f"Now update symlinks in {local_file_dir} to {remote_path}")
-                    for root, _, files in os.walk(local_file_dir):
-                        for file in files:
-                            symlink_path = os.path.join(root, file)
-                            # Only process symlinks
-                            if os.path.islink(symlink_path):
-                                # Update symlink to point to remote location
-                                # Remove the old symlink
-                                os.unlink(symlink_path)
-                                new_target = os.path.join(
-                                    remote_path, file)
-                                # Create the new symlink
-                                os.symlink(new_target, symlink_path)
-                                self.logger.debug(
-                                    f"new symlinks {symlink_path} -> {new_target}")
-                    # Defer cleanup; handled after all files are processed
+                        local_file_dir = local_file_dir[0].rstrip("/") + "/"
+                        local_file_dir = "/OMERO/ManagedRepository/" + local_file_dir
+                        # self.logger.debug(f"Move {local_file_dir} to {remote_path}")
+                        # 1. Rsync the actual files to the remote location
+                        # rsync_command = [
+                        #     "rsync", "-av", "--copy-links",  # Copy actual files instead of symlinks
+                        #     local_file_dir,  # Already guaranteed to have a trailing slash
+                        #     remote_path
+                        # ]
+                        # self.logger.info(f"Rsync command: {rsync_command}")
+                        # subprocess.run(rsync_command, check=True)
+                        # 2. Update the symlinks to point to the remote location
+                        self.logger.info(
+                            f"Now update symlinks in {local_file_dir} to {remote_path}")
+                        for root, _, files in os.walk(local_file_dir):
+                            for file in files:
+                                symlink_path = os.path.join(root, file)
+                                # Only process symlinks
+                                if os.path.islink(symlink_path):
+                                    # Update symlink to point to remote location
+                                    # Remove the old symlink
+                                    os.unlink(symlink_path)
+                                    new_target = os.path.join(
+                                        remote_path, file)
+                                    # Create the new symlink
+                                    os.symlink(new_target, symlink_path)
+                                    self.logger.debug(
+                                        f"new symlinks {symlink_path} -> {new_target}")
+                        # Defer cleanup; handled after all files are processed
 
                 else:   # no pre-processing
                     local_path = None
                     is_zarr = 'zar' in os.path.splitext(file_path)[1].lower()
                     if is_zarr and self.use_register_zarr:
-                        image_ids, _ = self.import_zarr(
+                        image_ids = self.import_zarr(
                             uri=str(file_path),
                             target=upload_target
                         )
