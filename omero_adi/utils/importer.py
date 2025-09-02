@@ -327,21 +327,29 @@ class DataProcessor:
                             )
                         )
 
-                    base_name = os.path.basename(file_path)
-                    input_base = os.path.splitext(base_name)[0]
-                    given_base = os.path.splitext(name or "")[0]
-                    if given_base and given_base != input_base:
-                        # Store a direct rename map for O(1) lookup later
-                        rename_map = self.data_package.get(
-                            PREPROC_RENAME_MAP_KEY, {}
-                        ) or {}
-                        rename_map[str(file_path)] = str(name or "")
-                        self.data_package[PREPROC_RENAME_MAP_KEY] = rename_map
-                        self.logger.debug(
-                            f"Name mismatch recorded in rename map for {file_path}: "
-                            f"input='{input_base}' vs given='{given_base}'"
-                            f" -> {self.data_package[PREPROC_RENAME_MAP_KEY]}"
-                        )
+                    # Rename decision based on output: compare full_path filename vs returned name
+                    if full_path and name:
+                        full_base = os.path.splitext(
+                            os.path.basename(full_path)
+                        )[0]
+                        name_base = os.path.splitext(str(name))[0]
+                        if name_base != full_base and local_alt:
+                            # Store map keyed by the actual local path used for import
+                            rename_map = (
+                                self.data_package.get(
+                                    PREPROC_RENAME_MAP_KEY, {}
+                                )
+                                or {}
+                            )
+                            rename_map[str(local_alt)] = str(name)
+                            self.data_package[PREPROC_RENAME_MAP_KEY] = rename_map
+                            self.logger.debug(
+                                (
+                                    "Rename needed: full_path base vs name differ; "
+                                    f"full='{full_base}', name='{name_base}'. "
+                                    f"Recorded rename for {local_alt} -> '{name}'"
+                                )
+                            )
 
                     is_processed = bool(
                         full_path and f"/{PROCESSED_DATA_FOLDER}/" in full_path
@@ -776,8 +784,25 @@ class DataPackageImporter:
                     self.logger.debug(f"Postprocessing ids {image_ids}: max ID = {image_or_plate_id}")
                     try:
                         self.add_image_annotations(
-                            conn, image_or_plate_id, uuid, file_path, is_screen=bool(screen_id),
-                            local_path=local_path)
+                            conn,
+                            image_or_plate_id,
+                            uuid,
+                            file_path,
+                            is_screen=bool(screen_id),
+                            local_path=local_path,
+                        )
+                        # Optional rename (datasets only): apply preprocessor 'name'
+                        # if it differs from output filename, keyed by local processed path
+                        if not screen_id and local_path:
+                            if self.rename_image_if_needed(
+                                conn, image_or_plate_id, local_path
+                            ):
+                                self.logger.info(
+                                    (
+                                        "Renamed Image "
+                                        f"{image_or_plate_id} based on preprocessing 'name'."
+                                    )
+                                )
                         self.logger.info(
                             f"Uploaded file: {file_path} to target: {upload_target} with ID: {image_or_plate_id}")
                     except Exception as annotation_error:
@@ -797,29 +822,18 @@ class DataPackageImporter:
         return successful_uploads, failed_uploads
 
     @connection
-    def rename_image_if_needed(self, conn, image_id, original_file_path):
-        """Rename Image 1:1 to the preprocessor 'name' if it differs.
-        
-        Call after metadata update (add_image_annotations) e.g. like 
-        
-        # Optional rename (datasets only): apply preprocessor 'name' if it differs from expected
-        if not screen_id:
-            renamed = self.rename_image_if_needed(
-                conn,
-                image_or_plate_id,
-                file_path,
-            )
-            if renamed:
-                self.logger.info(
-                    f"Renamed Image {image_or_plate_id} based on preprocessing 'name'.")
-        
+    def rename_image_if_needed(self, conn, image_id, local_path):
+        """Rename Image 1:1 to the preprocessor 'name' using local output path.
+
+        Looks up PREPROC_RENAME_MAP_KEY by the processed local path used for import.
+        Returns True if renamed, else False.
         """
         try:
             rename_map = self.data_package.get(
                 PREPROC_RENAME_MAP_KEY, {}
             ) or {}
             target_name = str(
-                rename_map.get(str(original_file_path), "")
+                rename_map.get(str(local_path), "")
             ).strip()
             if not target_name:
                 return False  # No mismatch stored
