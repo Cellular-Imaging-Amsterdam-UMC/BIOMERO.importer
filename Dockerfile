@@ -24,7 +24,8 @@ RUN apt-get update && apt-get install -y \
     libpq-dev \
     build-essential \
     fuse-overlayfs \
-    podman
+    podman \
+    unzip
 
 # Create a group and user with specified GID and UID
 RUN groupadd -g 1000 autoimportgroup && \
@@ -111,6 +112,18 @@ RUN chown -R autoimportuser:autoimportgroup /auto-importer/logs
 
 # Ensure your application's startup script is executable (already in GIT)
 RUN chmod +x /auto-importer/omero_adi/main.py
+
+# Download and install OMERO Java client libraries
+RUN mkdir -p /opt/omero/server && \
+    cd /tmp && \
+    wget -q https://downloads.openmicroscopy.org/omero/5.6.16/artifacts/OMERO.server-5.6.16-ice36.zip && \
+    unzip -q OMERO.server-5.6.16-ice36.zip && \
+    mv OMERO.server-5.6.16-ice36 /opt/omero/server/OMERO.server && \
+    rm OMERO.server-5.6.16-ice36.zip && \
+    chown -R autoimportuser:autoimportgroup /opt/omero
+
+# Set OMERODIR to point to the server installation (runtime environment)
+ENV OMERODIR /opt/omero/server/OMERO.server
 
 # Switch to the new user for all subsequent commands
 USER autoimportuser
