@@ -496,7 +496,6 @@ class DataPackageImporter:
         file_title = os.path.splitext(os.path.basename(uri))[0].rstrip('.ome')
         args = SimpleNamespace(uri=uri, endpoint=endpoint, name=file_title,
                                nosignrequest=nosignrequest, target=target, target_by_name=target_by_name)
-        reg_paths = []
 
         # --- start copy from register.main() ---
 
@@ -549,6 +548,9 @@ class DataPackageImporter:
         if image_ids:
             self.imported = True
             self.logger.info(f'Import successfully for {uri}')
+            if "plate" in zattrs:
+                # return parent (screen) id instead
+                image_ids = [target]
         else:
             self.imported = False
             self.logger.error(f'Import failed for {uri}')
