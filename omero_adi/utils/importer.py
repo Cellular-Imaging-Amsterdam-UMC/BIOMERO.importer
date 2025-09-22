@@ -545,16 +545,14 @@ class DataPackageImporter:
         # --- end copy from register.main() ---
 
         image_ids = [obj.getId().getValue() for obj in objs]
+        is_plate = "plate" in zattrs
         if image_ids:
             self.imported = True
             self.logger.info(f'Import successfully for {uri}')
-            if "plate" in zattrs:
-                # return parent (screen) id instead
-                image_ids = [target]
         else:
             self.imported = False
             self.logger.error(f'Import failed for {uri}')
-        return image_ids
+        return image_ids, is_plate
 
     @connection
     def get_plate_ids(self, conn, file_path, screen_id):
@@ -658,6 +656,7 @@ class DataPackageImporter:
 
         for i, file_path in enumerate(file_paths):
             self.logger.debug(f"Uploading file: {file_path}")
+            zarr_is_plate = False  # Track if ZARR import created a plate
             try:
                 if pre_processing:  # pre-processing
                     local_path = local_paths[i]  # TODO: assumes 1:1 local_paths and file_paths
@@ -668,7 +667,7 @@ class DataPackageImporter:
                         ][i]
                         full_path = result_entry[PREPROC_RESULT_LOCAL_FULL]
                         self.logger.debug(f"Importing {full_path}")
-                        image_ids = self.import_zarr(
+                        image_ids, zarr_is_plate = self.import_zarr(
                             uri=str(full_path),
                             target=upload_target
                         )
@@ -765,7 +764,7 @@ class DataPackageImporter:
                     local_path = None
                     is_zarr = 'zar' in os.path.splitext(file_path)[1].lower()
                     if is_zarr and self.use_register_zarr:
-                        image_ids = self.import_zarr(
+                        image_ids, zarr_is_plate = self.import_zarr(
                             uri=str(file_path),
                             target=upload_target
                         )
@@ -813,12 +812,15 @@ class DataPackageImporter:
                     # This means we should only be getting back 1 ID per single upload.
                     self.logger.debug(f"Postprocessing ids {image_ids}: max ID = {image_or_plate_id}")
                     try:
+                        # Determine if we're dealing with a plate:
+                        # Either we imported to a screen, or ZARR created a plate
+                        is_plate_object = bool(screen_id) or zarr_is_plate
                         self.add_image_annotations(
                             conn,
                             image_or_plate_id,
                             uuid,
                             file_path,
-                            is_screen=bool(screen_id),
+                            is_screen=is_plate_object,
                             local_path=local_path,
                         )
 
