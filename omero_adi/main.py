@@ -63,6 +63,10 @@ def create_executor(config):
         )
         # Add specific logger for ezomero
         logging.getLogger('ezomero').setLevel(logging.DEBUG)
+        # Reduce noise from OMERO gateway during startup
+        logging.getLogger('omero.gateway').setLevel(logging.INFO)
+        logging.getLogger('omero.client').setLevel(logging.INFO)
+        logging.getLogger('omero.util.Resources').setLevel(logging.INFO)
     return ProcessPoolExecutor(
         max_workers=config.get('max_workers', 4),
         initializer=init_worker
@@ -232,6 +236,9 @@ class DatabasePoller:
         Only process an order if its UUID has not been processed before.
         """
         Session = self.ingest_tracker.Session
+        consecutive_failures = 0
+        max_consecutive_failures = 5
+        
         while not self.shutdown_event.is_set():
             with Session() as session:
                 try:
@@ -239,6 +246,10 @@ class DatabasePoller:
                         self.IngestionTracking.stage == STAGE_NEW_ORDER,
                         self.IngestionTracking.id > self.last_max_id
                     ).order_by(self.IngestionTracking.id.asc()).all()
+                    
+                    # Reset failure counter on successful query
+                    consecutive_failures = 0
+                    
                     for order in new_orders:
                         if order.uuid in self.processed_uuids:
                             continue  # Skip if this order has been processed already
@@ -270,9 +281,31 @@ class DatabasePoller:
                         self.process_order(order_dict)
                         self.processed_uuids.add(order.uuid)
                 except Exception as e:
-                    self.logger.error(
-                        f"Error polling database: {e}", exc_info=True)
-            time.sleep(self.poll_interval)
+                    consecutive_failures += 1
+                    
+                    # Handle database connection issues gracefully without scary stacktraces
+                    error_msg = str(e).lower()
+                    if any(phrase in error_msg for phrase in [
+                        'server closed the connection',
+                        'name or service not known',
+                        'connection refused',
+                        'could not connect',
+                        'network is unreachable',
+                        'timeout expired'
+                    ]):
+                        if consecutive_failures <= max_consecutive_failures:
+                            self.logger.warning(f"Database temporarily unavailable (failure {consecutive_failures}/{max_consecutive_failures}): {e}")
+                        else:
+                            self.logger.error(f"Database connection persistently failing after {consecutive_failures} attempts: {e}")
+                    else:
+                        self.logger.error(f"Error polling database: {e}", exc_info=True)
+                        
+            # Use exponential backoff for repeated failures
+            if consecutive_failures > 0:
+                sleep_time = min(self.poll_interval * (2 ** min(consecutive_failures - 1, 5)), 60)
+                time.sleep(sleep_time)
+            else:
+                time.sleep(self.poll_interval)
 
     def process_order(self, order_dict) -> None:
         """
@@ -370,14 +403,20 @@ def main():
         )
         # Add specific logger for ezomero
         logging.getLogger('ezomero').setLevel(logging.DEBUG)
+        # Reduce noise from OMERO gateway during startup
+        logging.getLogger('omero.gateway').setLevel(logging.INFO)
+        logging.getLogger('omero.client').setLevel(logging.INFO)
 
         logger.info("Starting application...")
         
         logger.info("Testing OMERO connectivity...")
-        # Test OMERO connectivity
-        test_omero_connection()
+        # Wait for OMERO to be ready before proceeding
+        if not test_omero_connection():
+            logger.error("Could not establish OMERO connection. Exiting.")
+            return
 
         logger.info("Initializing system (create tables if missing)...")
+        # Wait for database to be ready before proceeding
         initialize_system(config)
 
         logger.info("Checking database migrations...")
@@ -391,8 +430,7 @@ def main():
         run_application(config, groups_info, executor)
     except Exception as e:
         logger.error("Fatal error in main: %s", e, exc_info=True)
-        while True:
-            time.sleep(60)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

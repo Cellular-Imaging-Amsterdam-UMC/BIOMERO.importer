@@ -203,11 +203,25 @@ class IngestTracker:
             Base.metadata.create_all(self.engine)
             self.logger.info("Database initialization successful")
         except Exception as e:
-            self.logger.error(
-                f"Unexpected error during IngestTracker initialization: {e}",
-                exc_info=True,
-            )
-            raise
+            # For initialization, let the caller handle retry logic and messaging
+            # Just re-raise for expected connection issues
+            error_msg = str(e).lower()
+            if any(phrase in error_msg for phrase in [
+                'name or service not known',
+                'connection refused',
+                'could not connect',
+                'network is unreachable',
+                'timeout expired',
+                'server closed the connection'
+            ]):
+                # Don't log - let the caller handle this
+                raise
+            else:
+                self.logger.error(
+                    f"Unexpected error during IngestTracker initialization: {e}",
+                    exc_info=True,
+                )
+                raise
 
     def dispose(self):
         """Safely dispose of database resources."""
@@ -326,16 +340,27 @@ class IngestTracker:
                         f"Created database entry: {new_entry.id}")
                     return new_entry.id
             except (SQLAlchemyError, psycopg2.OperationalError) as e:
-                if (
-                    "closed the connection" in str(e)
-                    or "Name or service not known" in str(e)
-                ):
-                    if attempt < max_retries - 1:
-                        time.sleep(0.5 * (attempt + 1))  # Exponential backoff
-                        continue
-                self.logger.error(
-                    f"Database error logging ingestion step: {e}",
-                    exc_info=True,
+                error_msg = str(e).lower()
+                is_connection_issue = any(phrase in error_msg for phrase in [
+                    "closed the connection",
+                    "name or service not known",
+                    "connection refused",
+                    "could not connect",
+                    "network is unreachable",
+                    "timeout expired"
+                ])
+                
+                if is_connection_issue and attempt < max_retries - 1:
+                    wait_time = 0.5 * (2 ** attempt)  # Exponential backoff
+                    self.logger.warning(f"Database connection issue (attempt {attempt + 1}/{max_retries}), retrying in {wait_time}s: {e}")
+                    time.sleep(wait_time)
+                    continue
+                elif is_connection_issue:
+                    self.logger.warning(f"Database connection persistently failing after {max_retries} attempts: {e}")
+                else:
+                    self.logger.error(
+                        f"Database error logging ingestion step: {e}",
+                        exc_info=True,
                 )
                 return None
             except Exception as e:
@@ -366,7 +391,20 @@ def initialize_ingest_tracker(config):
             raise Exception("IngestTracker failed to initialize properly")
         return True
     except Exception as e:
-        logger.error(f"Failed to initialize IngestTracker: {e}", exc_info=True)
+        # For initialization, we want the caller to handle retries
+        # Just silently return False for expected connection issues
+        error_msg = str(e).lower()
+        if any(phrase in error_msg for phrase in [
+            'name or service not known',
+            'connection refused',
+            'could not connect',
+            'network is unreachable',
+            'timeout expired'
+        ]):
+            # Don't log anything - let the caller handle retry messaging
+            pass
+        else:
+            logger.error(f"Failed to initialize IngestTracker: {e}", exc_info=True)
         _ingest_tracker = None
         return False
 

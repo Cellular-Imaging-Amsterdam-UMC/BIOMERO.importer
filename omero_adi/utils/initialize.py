@@ -3,6 +3,7 @@
 import yaml
 import json
 import logging
+import time
 from pathlib import Path
 from .ingest_tracker import initialize_ingest_tracker
 from sqlalchemy.sql import func
@@ -49,20 +50,36 @@ def initialize_system(config: dict) -> None:
     """
     Performs initial system setup.
     In the updated database-driven mode, group checks are no longer performed.
-    Errors are logged but do not cause the container to exit.
+    Waits for database to be ready before proceeding.
     """
     logger = logging.getLogger(__name__)
     try:
         logger.info("Starting system initialization (database-driven mode)...")
         logger.debug("Initializing ingest tracking database...")
-        success = initialize_ingest_tracker(config)  # Capture the return value
-        if not success:
-            logger.error("Failed to initialize ingest tracker")
-        else:
-            logger.info("System initialization completed successfully.")
+        
+        # Wait for database to be ready with retry logic
+        max_retries = 20  # ~3.5 minutes with exponential backoff
+        for attempt in range(max_retries):
+            success = initialize_ingest_tracker(config)
+            if success:
+                logger.info("System initialization completed successfully.")
+                return
+            else:
+                if attempt == 0:
+                    logger.info("Database not ready yet, waiting...")
+                elif attempt % 5 == 0:  # Log every few attempts
+                    logger.info("Still waiting for database (attempt %d/%d)...", attempt + 1, max_retries)
+                
+                if attempt < max_retries - 1:
+                    wait_time = min(5 * (1.5 ** attempt), 30)  # Exponential backoff, max 30s
+                    time.sleep(wait_time)
+        
+        logger.error("Failed to initialize database after %d attempts", max_retries)
+        raise Exception("Database initialization failed after maximum retries")
+        
     except Exception as e:
         logger.error(f"System initialization failed: {str(e)}", exc_info=True)
-        print(f"Exception during initialization: {str(e)}")  # Debug print
+        raise
 
 
 def finalize_dangling_orders_and_get_last_id(ingest_tracker, IngestionTracking, days=1):
@@ -139,24 +156,50 @@ def finalize_dangling_orders_and_get_last_id(ingest_tracker, IngestionTracking, 
 
 def test_omero_connection():
     import os
+    import time
     from omero.gateway import BlitzGateway
     logger = logging.getLogger(__name__)
     host = os.getenv("OMERO_HOST")
     user = os.getenv("OMERO_USER")
     password = os.getenv("OMERO_PASSWORD")
     port = os.getenv("OMERO_PORT")
-    try:
-        conn = BlitzGateway(user, password, host=host, port=port, secure=True)
-        if conn.connect():
-            logger.info(
-                "Successfully connected to OMERO server at %s:%s", host, port)
-            conn.close()
-            return True
-        else:
-            logger.error(
-                "Failed to connect to OMERO server at %s:%s", host, port)
-            return False
-    except Exception as e:
-        logger.error("Exception during OMERO connection test: %s",
-                     e, exc_info=True)
-        return False
+    
+    max_retries = 30  # 5 minutes with 10-second intervals
+    retry_delay = 10
+    
+    for attempt in range(max_retries):
+        try:
+            conn = BlitzGateway(user, password, host=host, port=port, secure=True)
+            if conn.connect():
+                logger.info("Successfully connected to OMERO server at %s:%s", host, port)
+                conn.close()
+                return True
+            else:
+                if attempt == 0:
+                    logger.info("Waiting for OMERO server to become ready at %s:%s...", host, port)
+                elif attempt % 6 == 0:  # Log every minute
+                    logger.info("Still waiting for OMERO server (attempt %d/%d)...", attempt + 1, max_retries)
+        except Exception as e:
+            # Handle common OMERO startup issues
+            error_msg = str(e).lower()
+            if any(phrase in error_msg for phrase in [
+                'server not fully initialized',
+                'obtained null object prox',
+                'connection refused',
+                'could not connect',
+                'apiusageexception',
+                'name or service not known'
+            ]):
+                if attempt == 0:
+                    logger.info("OMERO server not ready yet, waiting...")
+                elif attempt % 6 == 0:  # Log every minute
+                    logger.info("Still waiting for OMERO server (attempt %d/%d)...", attempt + 1, max_retries)
+            else:
+                logger.error("Unexpected error during OMERO connection test: %s", e, exc_info=True)
+                return False
+        
+        if attempt < max_retries - 1:
+            time.sleep(retry_delay)
+    
+    logger.error("Failed to connect to OMERO server after %d attempts (%d minutes)", max_retries, (max_retries * retry_delay) // 60)
+    return False
