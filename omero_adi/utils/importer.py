@@ -487,65 +487,19 @@ class DataPackageImporter:
             return False
 
     @connection
-    def import_zarr(self, conn, uri, target, target_by_name=None, endpoint=None, nosignrequest=False):
-        # Using https://github.com/BioNGFF/omero-import-utils/blob/main/metadata/register.py
-        from .register import load_attrs, register_image, register_plate, link_to_target, validate_endpoint
+    def import_zarr(self, conn, uri, target):
+        import omero_zarr.zarr_import
         import zarr
-        from types import SimpleNamespace
 
-        file_title = os.path.splitext(os.path.basename(uri))[0].rstrip('.ome')
-        args = SimpleNamespace(uri=uri, endpoint=endpoint, name=file_title,
-                               nosignrequest=nosignrequest, target=target, target_by_name=target_by_name)
-
-        # --- start copy from register.main() ---
-
-        validate_endpoint(endpoint)
-        store = None
-        if uri.startswith("/"):
-            store = zarr.storage.LocalStore(uri, read_only=True)
-        else:
-            storage_options = {}
-            if nosignrequest:
-                storage_options['anon'] = True
-
-            if endpoint:
-                storage_options['client_kwargs'] = {'endpoint_url': endpoint}
-
-            store = zarr.storage.FsspecStore.from_url(uri,
-                                                      read_only=True,
-                                                      storage_options=storage_options
-                                                      )
-
-        zattrs = load_attrs(store)
-        objs = []
-        if "plate" in zattrs:
-            print("Registering: Plate")
-            objs = [register_plate(conn, store, args, zattrs)]
-        else:
-            if "bioformats2raw.layout" in zattrs and zattrs["bioformats2raw.layout"] == 3:
-                print("Registering: bioformats2raw.layout")
-                series = 0
-                series_exists = True
-                while series_exists:
-                    try:
-                        print("Checking for series:", series)
-                        obj = register_image(conn, store, args, None, image_path=str(series))
-                        objs.append(obj)
-                    except FileNotFoundError:
-                        series_exists = False
-                    series += 1
-            else:
-                print("Registering: Image")
-                objs = [register_image(conn, store, args, zattrs)]
-
-        if args.target or args.target_by_name:
-            for obj in objs:
-                link_to_target(args, conn, obj)
-
-        # --- end copy from register.main() ---
-
+        objs = omero_zarr.zarr_import.import_zarr(conn, uri, target=target)
         image_ids = [obj.getId().getValue() for obj in objs]
-        is_plate = "plate" in zattrs
+
+        root = zarr.open(uri, mode="r")
+        attrs = root.attrs.asdict()
+        if "ome" in attrs:
+            attrs = attrs["ome"]
+        is_plate = "plate" in attrs
+
         if image_ids:
             self.imported = True
             self.logger.info(f'Import successfully for {uri}')
@@ -651,6 +605,10 @@ class DataPackageImporter:
         successful_uploads = []
         failed_uploads = []
         self.logger.debug(f"Uploading files: {file_paths}")
+        if screen_id:
+            target_type = 'Screen'
+        else:
+            target_type = 'Dataset'
         upload_target = dataset_id or screen_id
         pre_processing = local_paths is not None
 
@@ -682,7 +640,7 @@ class DataPackageImporter:
                             imported = self.import_to_omero(
                                 file_path=local_path,
                                 target_id=screen_id,
-                                target_type='Screen',
+                                target_type=target_type,
                                 uuid=uuid,
                                 depth=10
                             )
@@ -702,7 +660,7 @@ class DataPackageImporter:
                                 imported = self.import_to_omero(
                                     file_path=local_path,
                                     target_id=dataset_id,
-                                    target_type='Dataset',
+                                    target_type=target_type,
                                     uuid=uuid,
                                     depth=10
                                 )
@@ -773,7 +731,7 @@ class DataPackageImporter:
                             imported = self.import_to_omero(
                                 file_path=str(file_path),
                                 target_id=screen_id,
-                                target_type='Screen',
+                                target_type=target_type,
                                 uuid=uuid,
                                 depth=10
                             )
@@ -791,7 +749,7 @@ class DataPackageImporter:
                                 imported = self.import_to_omero(
                                     file_path=str(file_path),
                                     target_id=dataset_id,
-                                    target_type='Dataset',
+                                    target_type=target_type,
                                     uuid=uuid,
                                     depth=10
                                 )
