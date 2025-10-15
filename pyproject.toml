@@ -30,6 +30,7 @@ dependencies = [
     "pytest>=8.2.1",
     "sqlalchemy>=2.0.28",
     "psycopg2>=2.9.7",
+    "omero-cli-zarr==0.7.0rc1", # not zarr 3 compatible
     "zarr>=3",
     "alembic>=1.13"
 ]
