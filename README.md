@@ -1,10 +1,12 @@
-# OMERO Automated Data Import (ADI) System
+# BIOMERO.importer (OMERO ADI) System
 
-The OMERO Automated Data Import (ADI) system enables automated uploading of image data from microscope workstations to an OMERO server. ADI is a database-driven system that polls a PostgreSQL database for new import orders and processes them automatically.
+> **Note:** This system was formerly known as "OMERO Automated Data Import (ADI)". The new canonical name is **BIOMERO.importer** as part of the BIOMERO 2.0 ecosystem.
+
+The BIOMERO.importer system enables automated uploading of image data from microscope workstations to an OMERO server. BIOMERO.importer is a database-driven system that polls a PostgreSQL database for new import orders and processes them automatically, including the option of running preprocessing containers for e.g. file conversion or pyramid creation.
 
 ## System Overview
 
-The ADI system consists of:
+The BIOMERO.importer system consists of:
 
 1. **Database-driven order management**: Upload orders are stored in a PostgreSQL database with full tracking and preprocessing support
 2. **Automated polling**: The system continuously polls the database for new orders to process
@@ -19,7 +21,7 @@ The system uses SQLAlchemy models to manage:
 - **Preprocessing**: Optional containerized preprocessing steps stored in `imports_preprocessing` table
 - **Progress Tracking**: Complete audit trail of all import operations
 
-![Flow Diagram of ADI import proces](flow_diagram_ADI_import.png)
+![Flow Diagram of BIOMERO.importer process](flow_diagram_ADI_import.png)
 
 ### Key Components
 
@@ -249,7 +251,7 @@ For advanced file tracking, containers can output JSON on the last line:
 
 ## Running the System
 
-The ADI system is designed to run as a containerized service within the BIOMERO ecosystem:
+The BIOMERO.importer system is designed to run as a containerized service within the BIOMERO 2.0 ecosystem:
 
 ```bash
 # Start the service (typically via docker-compose)
@@ -312,12 +314,11 @@ The system includes comprehensive error handling:
 
 ## Integration with BIOMERO
 
-The ADI system is designed to work seamlessly with BIOMERO's workflow management:
+The BIOMERO.importer system is designed to work seamlessly with the BIOMERO 2.0 environment:
 
-- Shares the same PostgreSQL database for order coordination
-- Integrates with BIOMERO's authentication and authorization
-- Supports BIOMERO's containerized processing workflows
-- Provides audit trails for regulatory compliance
+- Shares the same PostgreSQL database (BIOMERO.db) for order coordination with BIOMERO.analyzer
+- Integrates with BIOMERO's OMERO.biomero web plugin for a unified interface
+- Provides audit trails for FAIR provenance
 
 ## Future Development
 
@@ -330,7 +331,7 @@ The current implementation is focused on:
 
 ---
 
-**Note**: This system replaces the previous file-based upload order approach. All order management is now database-driven using PostgreSQL and SQLAlchemy for improved reliability, scalability, and integration with BIOMERO workflows.
+**Note**: This system replaces the previous file-based upload order approach. All order management is now database-driven using PostgreSQL (BIOMERO.db) and SQLAlchemy for improved reliability, scalability, and integration with BIOMERO.
 
 ## Data Access Architecture
 
@@ -341,8 +342,8 @@ The ADI system requires a shared storage architecture where data is accessible f
 The system requires a **shared storage volume** (typically a Samba/CIFS mount or NFS) that is mounted identically across all containers:
 
 - **OMERO Server**: For in-place imports using `ln_s` transfers
-- **OMERO Web**: For omero.boost plugin to browse and select files
-- **OMERO ADI**: For reading source files and writing processed data
+- **OMERO Web**: For OMERO.biomero plugin to browse and select files
+- **BIOMERO.importer**: For reading source files and writing processed data
 - **OMERO Workers**: For script access to data files
 
 **Critical requirement**: All mounts must have **read/write (R/W) permissions**, not read-only.
@@ -369,7 +370,7 @@ services:
 
 ### In-Place Import Workflow
 
-The ADI system uses **in-place imports** exclusively, which means:
+The BIOMERO.importer system uses **in-place imports** exclusively, which means:
 
 1. **Source Data**: Files remain on the shared storage
 2. **OMERO Import**: Uses `transfer=ln_s` to create symlinks instead of copying data
@@ -540,6 +541,17 @@ docker exec omeroadi ls -la /OMERO/ManagedRepository
 
 This architecture ensures efficient, reliable data import while maintaining data integrity and providing flexibility for preprocessing workflows.
 
+## BIOMERO 2.0 Integration
+
+BIOMERO.importer is a core component of the BIOMERO 2.0 ecosystem, working alongside:
+
+- **BIOMERO.analyzer**: For HPC-based image analysis workflows
+- **BIOMERO.scripts**: For OMERO script-based workflow execution  
+- **BIOMERO.db**: Shared PostgreSQL database for workflow coordination
+- **OMERO.biomero**: Modern web interface for data import and analysis
+
+Together, these components provide a comprehensive FAIR imaging platform for automated data management and analysis.
+
 ## Developer guide: schema changes and migrations
 
 This project uses Alembic to manage database schema changes for ADI’s tables only. Migrations run automatically on container startup (guarded by a Postgres advisory lock) and are isolated via a per-project version table `alembic_version_omeroadi`.
@@ -575,7 +587,7 @@ Notes
 
 ### 2) Ensure DB access for Alembic
 
-Alembic autogenerate compares Models vs the live DB, so it must reach the database used by ADI.
+Alembic autogenerate compares Models vs the live DB, so it must reach the database used by BIOMERO.importer.
 
 Set the connection string as an environment variable:
 
@@ -607,7 +619,7 @@ Tips
 
 ### 5) Apply migrations to your DB
 
-Rebuild and restart your ADI container. ADI container will apply migrations automatically on startup when `ADI_RUN_MIGRATIONS=1` (default). This is handled by `omero_adi/db_migrate.py` and uses a Postgres advisory lock to avoid races.
+Rebuild and restart your BIOMERO.importer container. The container will apply migrations automatically on startup when `ADI_RUN_MIGRATIONS=1` (default). This is handled by `omero_adi/db_migrate.py` and uses a Postgres advisory lock to avoid races.
 
 ### 6) Commit the migration files
 
