@@ -68,32 +68,32 @@ class Preprocessing(Base):
 
         Migration warning:
             Changing columns or constraints requires a new Alembic migration.
-            Generate and apply a revision for ADI (omero_adi/migrations):
+            Generate and apply a revision for BIOMERO.importer (biomero_importer/migrations):
 
             PowerShell (Windows):
                 $env:INGEST_TRACKING_DB_URL = \
                     'postgresql+psycopg2://USER:PASS@HOST:5432/DB'
-                cd omeroadi/omero_adi
+                cd omeroadi/biomero_importer
                 alembic -c migrations/alembic.ini revision \
                     --autogenerate -m "explain change"
 
             Bash (Linux/macOS):
                 export INGEST_TRACKING_DB_URL=\\
                     postgresql+psycopg2://USER:PASS@HOST:5432/DB
-                cd omeroadi/omero_adi
+                cd omeroadi/biomero_importer
                 alembic -c migrations/alembic.ini revision \
                     --autogenerate -m "explain change"
                 
             When you include the version file in git, it will get packaged
             when the library is installed (also in the Dockerfile) and
-            run migration on startup of the ADI.
+            run migration on startup of the BIOMERO.importer.
 
             Alternatively, manually run
                 alembic -c migrations/alembic.ini upgrade head
 
             Notes:
                 - Version table: alembic_version_omeroadi
-                - Only ADI tables are included via env.py include_object
+                - Only BIOMERO.importer tables are included via env.py include_object
                 
     """
     __tablename__ = 'imports_preprocessing'

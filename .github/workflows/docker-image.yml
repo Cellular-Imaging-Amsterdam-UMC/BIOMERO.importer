@@ -1,4 +1,4 @@
-name: Docker Image CI
+name: Build BIOMERO.importer Docker Image
 on:
   release:
     types: [published]
@@ -28,7 +28,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/omeroadi
+            ${{ secrets.DOCKERHUB_USERNAME }}/biomero-importer
           tags: |
             type=ref,event=branch
             type=ref,event=pr

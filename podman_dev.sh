@@ -19,7 +19,7 @@ podman run -d --rm --name omeroadi \
     --volume /mnt/L-Drive/basic/divg:/data \
     --volume /opt/omero/logs/omeroadi:/auto-importer/logs:Z \
     --volume /opt/omero/config:/auto-importer/config \
-    --volume /opt/omero/OMERO-Automated-Data-Import/omero_adi:/auto-importer/omero_adi \
+    --volume /opt/omero/OMERO-Automated-Data-Import/biomero_importer:/auto-importer/biomero_importer \
     --volume /opt/omero/OMERO-Automated-Data-Import/tests:/auto-importer/tests \
     --volume /opt/omero/OMERO-Automated-Data-Import/db:/auto-importer/db \
     --userns=keep-id:uid=1000,gid=1000 \

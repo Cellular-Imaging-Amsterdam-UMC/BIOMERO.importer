@@ -6,7 +6,7 @@ venv/
 dist/
 build/
 test_logfile.log
-omero_adi.egg-info/
+biomero_importer.egg-info/
 omeroadi.egg-info/
 .pytest_cache/
 **/__pycache__

@@ -8,9 +8,9 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 
-# Import ADI Base (only migrate ADI tables)
+# Import BIOMERO.importer Base (only migrate BIOMERO.importer tables)
 # adjust if Base lives elsewhere
-from omero_adi.utils.ingest_tracker import Base as ADIBase
+from biomero_importer.utils.ingest_tracker import Base as ADIBase
 
 # Alembic Config provides access to values within the .ini in use.
 config = context.config

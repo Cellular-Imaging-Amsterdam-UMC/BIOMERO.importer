@@ -1,4 +1,4 @@
-name: Publish to PyPI
+name: Publish BIOMERO.importer to PyPI
 
 on:
   release:

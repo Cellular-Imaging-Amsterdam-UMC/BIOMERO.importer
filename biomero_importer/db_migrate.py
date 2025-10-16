@@ -44,12 +44,12 @@ def run_migrations_on_startup():
         )
     if not db_url:
         raise RuntimeError(
-            "ADI migrations: No DB URL found. Ensure IngestTracker is "
+            "BIOMERO.importer migrations: No DB URL found. Ensure IngestTracker is "
             "initialized or set INGEST_TRACKING_DB_URL/SQLALCHEMY_URL."
         )
 
     logger = logging.getLogger(__name__)
-    logger.info(f"ADI Alembic DB: {_mask_url(db_url)}")
+    logger.info(f"BIOMERO.importer Alembic DB: {_mask_url(db_url)}")
     engine = create_engine(db_url)
 
     cfg = Config()

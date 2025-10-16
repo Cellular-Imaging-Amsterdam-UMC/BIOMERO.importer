@@ -1,5 +1,5 @@
 #------------------------------------------------#
-# Main ADI settings
+# Main BIOMERO.importer settings
 #------------------------------------------------#
 # Paths settings
 log_file_path: logs/app.logs
@@ -10,7 +10,7 @@ data_dir_name: .omerodata
 ingest_tracking_db: postgresql+psycopg2://biomero:biomero@database-biomero:5432/biomero
 
 #------------------------------------------------#
-# ADI Worker settings
+# BIOMERO.importer Worker settings
 #------------------------------------------------#
 # Number of import orders that get processed in parallel
 max_workers: 4

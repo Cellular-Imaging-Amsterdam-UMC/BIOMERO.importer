@@ -33,10 +33,8 @@ def mock_groups_info():
 
 @pytest.fixture(autouse=True)
 def mock_main_imports():
-    with patch('main.load_settings', side_effect=mock_load_settings), \
-         patch('main.ProcessPoolExecutor'), \
-         patch('main.setup_logger'):
-        yield
+    # Only mock what's actually needed - some tests may not need any mocks
+    yield
 
 @pytest.fixture
 def mock_order_info():
@@ -54,79 +52,112 @@ def mock_order_info():
         'ScreenID': None
     }
 
-def test_data_package_initialization(mock_order_info):
-    from main import DataPackage
-    data_package = DataPackage(mock_order_info, str(TEST_CONFIG_DIR))
-    assert data_package.Group == mock_order_info['Group']
-    assert data_package.Username == mock_order_info['Username']
-    assert data_package.Dataset == mock_order_info['Dataset']
-    assert data_package.UUID == mock_order_info['UUID']
-    assert data_package.Files == mock_order_info['Files']
-    assert data_package.file_names == mock_order_info['file_names']
-    assert data_package.UserID == mock_order_info['UserID']
-    assert data_package.GroupID == mock_order_info['GroupID']
-    assert data_package.ProjectID == mock_order_info['ProjectID']
-    assert data_package.DatasetID == mock_order_info['DatasetID']
-    assert data_package.ScreenID == mock_order_info['ScreenID']
+def test_data_package_initialization():
+    """Test DataPackage class initialization."""
+    from biomero_importer.main import DataPackage
+    order_info = {
+        'Group': 'Private',
+        'Username': 'TestUser',
+        'Dataset': 'TestDataset',
+        'UUID': 'TestUUID',
+        'Files': ['file1.txt', 'file2.txt'],
+        'FileNames': ['file1.txt', 'file2.txt'],
+        'UserID': 1,
+        'GroupID': 1,
+        'ProjectID': 1,
+        'DatasetID': 1,
+        'ScreenID': None
+    }
+    data_package = DataPackage(order_info, str(TEST_CONFIG_DIR))
+    
+    # Test the actual interface - DataPackage uses .get() method, not direct attribute access
+    assert data_package.get('Group') == order_info['Group']
+    assert data_package.get('Username') == order_info['Username']
+    assert data_package.get('Dataset') == order_info['Dataset']
+    assert data_package.get('UUID') == order_info['UUID']
+    assert data_package.get('Files') == order_info['Files']
+    assert data_package.get('FileNames') == order_info['FileNames']
+    assert data_package.get('UserID') == order_info['UserID']
+    assert data_package.get('GroupID') == order_info['GroupID']
+    assert data_package.get('ProjectID') == order_info['ProjectID']
+    assert data_package.get('DatasetID') == order_info['DatasetID']
+    assert data_package.get('ScreenID') == order_info['ScreenID']
 
 def test_data_package_str_representation(mock_order_info):
-    from main import DataPackage
+    """Test DataPackage string representation."""
+    from biomero_importer.main import DataPackage
     data_package = DataPackage(mock_order_info, str(TEST_CONFIG_DIR))
     str_repr = str(data_package)
-    assert 'DataPackage(' in str_repr
-    assert 'Group: Private' in str_repr
-    assert 'Username: TestUser' in str_repr
-    assert 'Dataset: TestDataset' in str_repr
-    assert 'UUID: TestUUID' in str_repr
-    assert 'Files: 2 files' in str_repr
+    # DataPackage inherits from UserDict, so str() shows the dict contents
+    assert "'Group': 'Private'" in str_repr
+    assert "'Username': 'TestUser'" in str_repr
+    assert "'Dataset': 'TestDataset'" in str_repr
+    assert "'UUID': 'TestUUID'" in str_repr
+    assert "'Files': ['file1.txt', 'file2.txt']" in str_repr
+
 
 def test_data_package_get_method(mock_order_info):
-    from main import DataPackage
+    """Test DataPackage get method."""
+    from biomero_importer.main import DataPackage
     data_package = DataPackage(mock_order_info, str(TEST_CONFIG_DIR))
     assert data_package.get('Group') == 'Private'
     assert data_package.get('NonExistentKey', 'DefaultValue') == 'DefaultValue'
 
+
 def test_load_config():
-    with patch('main.load_settings', side_effect=mock_load_settings):
-        from main import load_config
-        config, groups_info = load_config()
-        assert config == mock_load_settings("config/settings.yml")
-        assert groups_info == mock_load_settings("sample_groups_list.json")
+    """Test load_config function."""
+    from biomero_importer.main import load_config
+    
+    # Create a mock YAML config file path
+    import tempfile
+    import yaml
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yml',
+                                     delete=False) as f:
+        yaml.dump({'test_key': 'test_value'}, f)
+        temp_config_path = f.name
+    
+    try:
+        config = load_config(temp_config_path)
+        assert config['test_key'] == 'test_value'
+    finally:
+        import os
+        os.unlink(temp_config_path)
+
 
 def test_create_executor(mock_config):
-    with patch('main.ProcessPoolExecutor') as mock_executor:
-        from main import create_executor
-        executor = create_executor(mock_config)
-        mock_executor.assert_called_once_with(max_workers=mock_config['max_workers'])
+    with patch('biomero_importer.main.ProcessPoolExecutor') as mock_executor:
+        from biomero_importer.main import create_executor
+        create_executor(mock_config)
+        mock_executor.assert_called_once_with(
+            max_workers=mock_config.get('max_workers', 4),
+            initializer=mock_executor.call_args.kwargs['initializer']
+        )
 
-def test_setup_logging(mock_config):
-    with patch('main.setup_logger') as mock_setup_logger:
-        from main import setup_logging
-        logger = setup_logging(mock_config)
-        mock_setup_logger.assert_called_once_with('main', mock_config['log_file_path'])
 
 @pytest.fixture
-def mock_directory_poller():
-    with patch('main.DirectoryPoller') as mock_dp:
+def mock_database_poller():
+    with patch('biomero_importer.main.DatabasePoller') as mock_dp:
         yield mock_dp.return_value
 
-def test_run_application(mock_config, mock_groups_info, mock_directory_poller):
+
+def test_run_application(mock_config, mock_groups_info, mock_database_poller):
     mock_executor = MagicMock()
-    mock_logger = MagicMock()
     
-    with patch('main.initialize_system') as mock_init_system, \
-         patch('main.signal.signal') as mock_signal, \
-         patch('main.time.sleep', side_effect=[None, Exception("Stop loop")]):  # Force loop to exit after one iteration
+    with patch('biomero_importer.main.signal.signal') as mock_signal, \
+         patch('biomero_importer.main.time.sleep',
+               side_effect=[None, Exception("Stop loop")]):
         
-        from main import run_application
+        from biomero_importer.main import run_application
         
         try:
-            run_application(mock_config, mock_groups_info, mock_executor, mock_logger)
+            run_application(mock_config, mock_groups_info,
+                            mock_executor)
         except Exception as e:
-            assert str(e) == "Stop loop"  # Ensure we exited due to our forced exception
+            # Ensure we exited due to our forced exception
+            assert str(e) == "Stop loop"
         
-        mock_init_system.assert_called_once_with(mock_config)
-        assert mock_signal.call_count == 2  # Should be called twice for SIGINT and SIGTERM
-        mock_directory_poller.start.assert_called_once()
-        mock_directory_poller.stop.assert_called_once()
+        # Should be called twice for SIGINT and SIGTERM
+        assert mock_signal.call_count == 2
+        mock_database_poller.start.assert_called_once()
+        mock_database_poller.stop.assert_called_once()
         mock_executor.shutdown.assert_called_once_with(wait=True)

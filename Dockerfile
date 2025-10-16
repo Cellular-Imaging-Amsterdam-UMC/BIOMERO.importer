@@ -111,7 +111,7 @@ RUN mkdir -p /auto-importer/logs
 RUN chown -R autoimportuser:autoimportgroup /auto-importer/logs
 
 # Ensure your application's startup script is executable (already in GIT)
-RUN chmod +x /auto-importer/omero_adi/main.py
+RUN chmod +x /auto-importer/biomero_importer/main.py
 
 # Download and install OMERO Java client libraries
 RUN mkdir -p /opt/omero/server && \
@@ -129,4 +129,4 @@ ENV OMERODIR /opt/omero/server/OMERO.server
 USER autoimportuser
 
 # Set the default command or entrypoint to the main script
-ENTRYPOINT ["/opt/conda/bin/conda", "run", "-n", "auto-import-env", "python", "-m", "omero_adi.main"]
+ENTRYPOINT ["/opt/conda/bin/conda", "run", "-n", "auto-import-env", "python", "-m", "biomero_importer.main"]

@@ -1,4 +1,4 @@
-# BIOMERO.importer (OMERO ADI) System
+# BIOMERO.importer - Automated Data Import System
 
 > **Note:** This system was formerly known as "OMERO Automated Data Import (ADI)". The new canonical name is **BIOMERO.importer** as part of the BIOMERO 2.0 ecosystem.
 
@@ -126,7 +126,7 @@ This creates upload orders for multiple groups based on your configuration.
 ### Manual Database Insertion
 
 ```python
-from omero_adi.utils.ingest_tracker import IngestionTracking, Preprocessing, STAGE_NEW_ORDER
+from biomero_importer.utils.ingest_tracker import IngestionTracking, Preprocessing, STAGE_NEW_ORDER
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine
 
@@ -603,14 +603,14 @@ $env:INGEST_TRACKING_DB_URL = "postgresql://postgres:postgres@localhost:55432/bi
 
 ### 3) Make your SQLAlchemy model change
 
-Edit the models in `omero_adi/utils/ingest_tracker.py`. Keep changes minimal and run linters/tests as needed.
+Edit the models in `biomero_importer/utils/ingest_tracker.py`. Keep changes minimal and run linters/tests as needed.
 
 ### 4) Generate a migration
 
-The Alembic config is embedded under `omero_adi/migrations/` and reads the URL from `INGEST_TRACKING_DB_URL`. Use python -m to avoid path issues.
+The Alembic config is embedded under `biomero_importer/migrations/` and reads the URL from `INGEST_TRACKING_DB_URL`. Use python -m to avoid path issues.
 
 ```powershell
-.\.venv\Scripts\python -m alembic -c omero_adi\migrations\alembic.ini revision --autogenerate -m "your concise message"
+.\.venv\Scripts\python -m alembic -c biomero_importer\migrations\alembic.ini revision --autogenerate -m "your concise message"
 ```
 
 Tips
@@ -619,11 +619,11 @@ Tips
 
 ### 5) Apply migrations to your DB
 
-Rebuild and restart your BIOMERO.importer container. The container will apply migrations automatically on startup when `ADI_RUN_MIGRATIONS=1` (default). This is handled by `omero_adi/db_migrate.py` and uses a Postgres advisory lock to avoid races.
+Rebuild and restart your BIOMERO.importer container. The container will apply migrations automatically on startup when `ADI_RUN_MIGRATIONS=1` (default). This is handled by `biomero_importer/db_migrate.py` and uses a Postgres advisory lock to avoid races.
 
 ### 6) Commit the migration files
 
-Add the new file(s) under `omero_adi/migrations/versions/` to source control. These are included in the package so other environments (and the container) can run them.
+Add the new file(s) under `biomero_importer/migrations/versions/` to source control. These are included in the package so other environments (and the container) can run them.
 
 ### Optional: First-time adoption (stamp)
 
@@ -633,7 +633,7 @@ Two options:
 1. Temporarily set `ADI_ALLOW_AUTO_STAMP=1` in the ADI container environment and restart the service once. The startup migration runner will stamp to head and then upgrade.
 2. Or, run manually:
   ```powershell
-  .\.venv\Scripts\python -m alembic -c omero_adi\migrations\alembic.ini stamp head
+  .\.venv\Scripts\python -m alembic -c biomero_importer\migrations\alembic.ini stamp head
   ```
 
 After stamping, remove/disable the auto-stamp flag. Normal revisions and upgrades should be used going forward.
@@ -662,8 +662,8 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\python -m pip install -e .
 
 # Generate and apply migration
-.\.venv\Scripts\python -m alembic -c omero_adi\migrations\alembic.ini revision --autogenerate -m "add new column"
-.\.venv\Scripts\python -m alembic -c omero_adi\migrations\alembic.ini upgrade head
+.\.venv\Scripts\python -m alembic -c biomero_importer\migrations\alembic.ini revision --autogenerate -m "add new column"
+.\.venv\Scripts\python -m alembic -c biomero_importer\migrations\alembic.ini upgrade head
 ```
 
 

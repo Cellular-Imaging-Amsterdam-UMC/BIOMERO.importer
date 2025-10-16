@@ -1,4 +1,4 @@
-# omero_adi/__init__.py
+# biomero_importer/__init__.py
 
 from .initialize import initialize_system, load_settings
 from .upload_order_manager import UploadOrderManager

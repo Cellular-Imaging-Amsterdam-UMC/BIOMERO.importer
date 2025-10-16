@@ -1,7 +1,7 @@
 import json
 import os
 import pytest
-from omero_adi.utils.ingest_tracker import initialize_ingest_tracker, log_ingestion_step, STAGE_IMPORTED
+from biomero_importer.utils.ingest_tracker import initialize_ingest_tracker, log_ingestion_step, STAGE_IMPORTED
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 import tempfile
@@ -26,10 +26,11 @@ def setup_database():
 
     yield config  # Yield the config for use in tests
 
-    # Dispose the global ingest_tracker
-    from omero_adi.utils.ingest_tracker import ingest_tracker
-    if ingest_tracker:
-        ingest_tracker.dispose()
+    # Dispose the global ingest_tracker if it exists
+    from biomero_importer.utils.ingest_tracker import get_ingest_tracker
+    tracker = get_ingest_tracker()
+    if tracker:
+        tracker.dispose()
         
     # Clean up the database file after tests
     if os.path.exists(TEST_DB_PATH):
@@ -49,6 +50,7 @@ def test_log_ingestion_step(setup_database):
         'Username': 'test_user',
         'Dataset': 'test_dataset',
         'UUID': '123e4567-e89b-12d3-a456-426614174000',
+        'DestinationID': 'test_dataset_id',  # Added missing field
         'Files': ["/path/to/test_file.tif", "/path/to/second/file.qptiff"],
         'file_names': ["test_file.tif", "file.qptiff"]
     }
@@ -67,12 +69,14 @@ def test_log_ingestion_step(setup_database):
 
     # Use 'with session' for session management
     with Session() as session:
-        result = session.execute(text('SELECT * FROM ingestion_tracking WHERE uuid = :uuid'), {'uuid': order_info['UUID']}).fetchone()
-
+        result = session.execute(text('SELECT * FROM imports WHERE uuid = :uuid'), {'uuid': order_info['UUID']}).fetchone()
+        
         assert result is not None
         assert result.group_name == order_info['Group']
         assert result.user_name == order_info['Username']
-        assert result.data_package == order_info['Dataset']
+        assert result.destination_id == order_info['DestinationID']
+        assert result.uuid == order_info['UUID']
+        assert result.stage == stage
         assert result.stage == stage
         assert result.uuid == order_info['UUID']
         assert json.loads(result.files) == order_info['Files']
