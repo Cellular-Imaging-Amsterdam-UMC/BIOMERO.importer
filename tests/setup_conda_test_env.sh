@@ -32,13 +32,13 @@ check_conda() {
 check_conda
 
 # After running the script, activate the Conda environment before running any test scripts:
-# conda activate auto-import-env
+# conda activate biomero-importer-env
 # Note: The --clean flag can be used to remove the existing environment before creating a new one.
 # Usage: ./setup_conda_test_env.sh --clean
 # This is useful for ensuring a fresh setup or resolving environment conflicts.
 
 # Set the name for the Conda environment
-ENV_NAME="auto-import-env"
+ENV_NAME="biomero-importer-env"
 
 # Check if the --clean flag is passed
 if [[ "$1" == "--clean" ]]; then
@@ -71,6 +71,6 @@ pip install -e .[test]
 chmod +x src/main.py
 
 echo "Conda environment '$ENV_NAME' has been set up and activated."
-echo "You can now test your container setup in this environment."
+echo "You can now test your BIOMERO.importer setup in this environment."
 echo "To activate the environment, run: conda activate $ENV_NAME"
 echo "To deactivate the environment, use 'conda deactivate'."

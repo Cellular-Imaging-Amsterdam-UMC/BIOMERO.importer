@@ -73,14 +73,14 @@ class Preprocessing(Base):
             PowerShell (Windows):
                 $env:INGEST_TRACKING_DB_URL = \
                     'postgresql+psycopg2://USER:PASS@HOST:5432/DB'
-                cd omeroadi/biomero_importer
+                cd biomero-importer/biomero_importer
                 alembic -c migrations/alembic.ini revision \
                     --autogenerate -m "explain change"
 
             Bash (Linux/macOS):
                 export INGEST_TRACKING_DB_URL=\\
                     postgresql+psycopg2://USER:PASS@HOST:5432/DB
-                cd omeroadi/biomero_importer
+                cd biomero-importer/biomero_importer
                 alembic -c migrations/alembic.ini revision \
                     --autogenerate -m "explain change"
                 

@@ -1,6 +1,6 @@
-# OMERO Automated Data Import - Test Environment Setup
+# BIOMERO.importer - Test Environment Setup
 
-This document explains how to set up a test environment for the OMERO Automated Data Import project using a Conda environment and a local dockerized OMERO instance.
+This document explains how to set up a test environment for the BIOMERO.importer project using a Conda environment and a local dockerized OMERO instance.
 
 TODO: Add here source for our dockerized omero
 TODO: Add more info on the sys req like WSL
@@ -10,9 +10,9 @@ TODO: Add more info on the sys req like WSL
 We've created a script `setup_conda_test_env.sh` to automate the process of setting up a Conda environment for testing. This script does the following:
 
 1. Checks if Conda is installed and provides installation instructions if it's not.
-2. Creates a new Conda environment named `auto-import-env` with Python 3.10.
+2. Creates a new Conda environment named `biomero-importer-env` with Python 3.10.
 3. Installs necessary packages including `omero-py`, `bftools`, and `psycopg2`.
-4. Clones the OMERO-Automated-Data-Import repository if it doesn't exist.
+4. Clones the BIOMERO.importer repository if it doesn't exist.
 5. Installs additional requirements from the `requirements.txt` file.
 6. Sets up logging directories and makes the main script executable.
 
@@ -34,7 +34,7 @@ After setting up the Conda environment and ensuring your local OMERO instance is
 
 1. Activate the Conda environment:
    ```
-   conda activate auto-import-env
+   conda activate biomero-importer-env
    ```
 
 2. Log in to OMERO:
@@ -67,4 +67,4 @@ Remember to deactivate the Conda environment when you're done testing:
 conda deactivate
 ```
 
-This setup allows you to test the OMERO Automated Data Import project in an environment that closely mirrors the production setup, ensuring that your tests are as accurate and relevant as possible.
+This setup allows you to test the BIOMERO.importer project in an environment that closely mirrors the production setup, ensuring that your tests are as accurate and relevant as possible.

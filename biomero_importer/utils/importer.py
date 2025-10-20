@@ -922,8 +922,9 @@ class DataPackageImporter:
             # Add timestamp for when annotation was created
             import datetime
             annotation_dict['Import_Timestamp'] = datetime.datetime.now().isoformat()
-            
-            ns = "omeroadi.import"
+
+            # Get configurable annotation namespace with fallback to default
+            ns = self.config.get('annotation_namespace', 'biomero.import')
             object_type = "Plate" if is_screen else "Image"
             
             # CSV metadata reading logic ...

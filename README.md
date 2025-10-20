@@ -73,6 +73,10 @@ skip_upgrade: false
 skip_all: false
 
 use_register_zarr: true
+
+# Annotation namespace for OMERO metadata (default: "biomero.import")
+# Can be customized to maintain compatibility with existing systems
+annotation_namespace: "biomero.import"
 ```
 
 **Note**: The `upload_orders_dir_name`, `data_dir_name`, and `failed_uploads_directory_name` settings are **legacy from the old file-based system** and are no longer used in the current database-driven implementation.

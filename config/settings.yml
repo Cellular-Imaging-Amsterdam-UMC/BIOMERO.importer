@@ -31,6 +31,9 @@ skip_upgrade: true
 ttl_for_user_conn: 60000
 # Use ADI zarr register script to register ome-zarrs - requires omero-zarr-pixel-buffer
 use_register_zarr: true
+# Annotation namespace for OMERO metadata (default: "biomero.import")
+# Can be customized to maintain compatibility with existing systems
+annotation_namespace: "biomero.import"
 
 #------------------------------------------------#
 # Test settings
