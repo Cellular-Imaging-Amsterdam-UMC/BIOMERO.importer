@@ -202,7 +202,7 @@ The system runs containers using Podman with these settings:
 
 ```yaml
 # In docker-compose.yml
-omeroadi:
+biomero-importer:
   privileged: true
   devices:
     - "/dev/fuse:/dev/fuse"
@@ -219,7 +219,7 @@ Configure preprocessing in your database order:
 ```python
 preprocessing = Preprocessing(
     container="cellularimagingcf/converter:latest",
-    input_file="{Files}",  # Replaced by OMEROADI with actual file path
+    input_file="{Files}",  # Replaced by BIOMERO.importer with actual file path
     output_folder="/data",  # Mount point in container
     alt_output_folder="/out",  # Alternative output location
     extra_params={
@@ -255,10 +255,10 @@ The BIOMERO.importer system is designed to run as a containerized service within
 
 ```bash
 # Start the service (typically via docker-compose)
-docker-compose up omeroadi
+docker-compose up biomero-importer
 
 # Check logs
-docker-compose logs -f omeroadi
+docker-compose logs -f biomero-importer
 ```
 
 ## Monitoring and Debugging
@@ -335,7 +335,7 @@ The current implementation is focused on:
 
 ## Data Access Architecture
 
-The ADI system requires a shared storage architecture where data is accessible from multiple containers with read/write permissions. This is essential for in-place imports and preprocessing workflows.
+The BIOMERO.importer system requires a shared storage architecture where data is accessible from multiple containers with read/write permissions. This is essential for in-place imports and preprocessing workflows.
 
 ### Storage Requirements
 
@@ -362,7 +362,7 @@ services:
     volumes:
       - "./web/L-Drive:/data:rw"  # Same mount path, R/W access
       
-  omeroadi:
+  biomero-importer:
     volumes:
       - "omero:/OMERO"
       - "./web/L-Drive:/data"  # Identical mount path for in-place imports
@@ -482,7 +482,7 @@ volumes:
 #### Podman Setup (Linux)
 
 ```bash
-podman run -d --rm --name omeroadi \
+podman run -d --rm --name biomero-importer \
     --privileged \
     --device /dev/fuse \
     --security-opt label=disable \
@@ -494,10 +494,10 @@ podman run -d --rm --name omeroadi \
     --network omero \
     --volume /mnt/datadisk/omero:/OMERO \
     --volume /mnt/L-Drive/basic/divg:/data \
-    --volume "$(pwd)/logs/omeroadi:/auto-importer/logs:Z" \
+    --volume "$(pwd)/logs/biomero-importer:/auto-importer/logs:Z" \
     --volume "$(pwd)/config:/auto-importer/config" \
     --userns=keep-id:uid=1000,gid=1000 \
-    cellularimagingcf/omeroadi:latest
+    cellularimagingcf/biomero-importer:latest
 ```
 
 ### Storage Permissions
@@ -529,14 +529,14 @@ Use these commands to diagnose:
 
 ```bash
 # Check mount points
-docker exec omeroadi df -h
+docker exec biomero-importer df -h
 
 # Test file access
-docker exec omeroadi ls -la /data
-docker exec omeroadi touch /data/test-write-permissions
+docker exec biomero-importer ls -la /data
+docker exec biomero-importer touch /data/test-write-permissions
 
 # Verify OMERO storage
-docker exec omeroadi ls -la /OMERO/ManagedRepository
+docker exec biomero-importer ls -la /OMERO/ManagedRepository
 ```
 
 This architecture ensures efficient, reliable data import while maintaining data integrity and providing flexibility for preprocessing workflows.
@@ -554,7 +554,7 @@ Together, these components provide a comprehensive FAIR imaging platform for aut
 
 ## Developer guide: schema changes and migrations
 
-This project uses Alembic to manage database schema changes for ADI’s tables only. Migrations run automatically on container startup (guarded by a Postgres advisory lock) and are isolated via a per-project version table `alembic_version_omeroadi`.
+This project uses Alembic to manage database schema changes for BIOMERO.importer's tables only. Migrations run automatically on container startup (guarded by a Postgres advisory lock) and are isolated via a per-project version table `alembic_version_omeroadi`.
 
 Below is a practical, copy-paste friendly guide to make and apply a schema change.
 
@@ -627,10 +627,10 @@ Add the new file(s) under `biomero_importer/migrations/versions/` to source cont
 
 ### Optional: First-time adoption (stamp)
 
-If your DB already has the ADI tables at the desired schema but no version table yet, you can baseline with a stamp so Alembic doesn’t try to recreate history.
+If your DB already has the BIOMERO.importer tables at the desired schema but no version table yet, you can baseline with a stamp so Alembic doesn't try to recreate history.
 
 Two options:
-1. Temporarily set `ADI_ALLOW_AUTO_STAMP=1` in the ADI container environment and restart the service once. The startup migration runner will stamp to head and then upgrade.
+1. Temporarily set `ADI_ALLOW_AUTO_STAMP=1` in the BIOMERO.importer container environment and restart the service once. The startup migration runner will stamp to head and then upgrade.
 2. Or, run manually:
   ```powershell
   .\.venv\Scripts\python -m alembic -c biomero_importer\migrations\alembic.ini stamp head
@@ -640,14 +640,14 @@ After stamping, remove/disable the auto-stamp flag. Normal revisions and upgrade
 
 ### How Alembic is scoped here
 
-- Only ADI’s tables are included via Alembic’s `env.py` `include_object` filter. This prevents changes to other apps’ tables in the same database.
-- A dedicated version table `alembic_version_omeroadi` isolates ADI’s migration history.
+- Only BIOMERO.importer's tables are included via Alembic's `env.py` `include_object` filter. This prevents changes to other apps' tables in the same database.
+- A dedicated version table `alembic_version_omeroadi` isolates BIOMERO.importer's migration history.
 
 ### Common issues
 
-- autogenerate finds nothing: Ensure your model changes are in the ADI `Base` metadata and your `INGEST_TRACKING_DB_URL` points to the correct DB.
+- autogenerate finds nothing: Ensure your model changes are in the BIOMERO.importer `Base` metadata and your `INGEST_TRACKING_DB_URL` points to the correct DB.
 - autogenerate complains DB not up to date: Run upgrade head, then re-run autogenerate.
-- Missing template `script.py.mako`: It’s included under `omero_adi/migrations/`; ensure your editable install points to your working tree.
+- Missing template `script.py.mako`: It's included under `biomero_importer/migrations/`; ensure your editable install points to your working tree.
 
 ### Quick reference
 
